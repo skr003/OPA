@@ -1,0 +1,52 @@
+pipeline {
+    agent any
+    environment {
+        AZURE_CREDENTIALS = credentials('azure-sp-credentials')
+        // Ensure OPA and tfsec are installed on the agent
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('IaC Static Analysis') {
+            steps {
+                sh 'echo "Running tfsec..."'
+                // Export results to JSON for OPA to read
+                sh 'tfsec ./terraform --format json > tfsec_results.json'
+            }
+        }
+
+        stage('OPA Policy Check') {
+            steps {
+                sh 'echo "Evaluating against CIS Benchmarks..."'
+                // Evaluate the tfsec JSON output against the Rego policy
+                // If the query returns any violation, the command fails (exit 1)
+                script {
+                    def opaResult = sh(script: 'opa eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.azure.deny" --format pretty', returnStdout: true)
+                    
+                    if (opaResult.contains("CIS_Violation")) {
+                        error "Pipeline Failed: CIS Policy Violations Found! \n ${opaResult}"
+                    } else {
+                        echo "Policy Check Passed: No CIS Violations."
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan & Apply') {
+            // Only runs if OPA check passes
+            steps {
+                dir('terraform') {
+                    sh 'terraform init'
+                    sh 'terraform plan -out=tfplan'
+                    // Uncomment below for auto-deploy, or use an input step for manual approval
+                    // sh 'terraform apply -auto-approve tfplan' 
+                }
+            }
+        }
+    }
+}
