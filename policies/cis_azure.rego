@@ -13,7 +13,9 @@ exception_list := {
 }
 
 # Helper to check if a resource is on the exception list
-is_exempt(resource_name) {
+# FIX: Added 'if' keyword here
+is_exempt(resource_name) if {
+    # Check if the resource name exists in the set
     exception_list[resource_name]
 }
 
@@ -24,7 +26,7 @@ is_exempt(resource_name) {
 deny contains msg if {
     result := input.results[_]
     result.rule_id == "AZU010"
-    not is_exempt(result.resource)  # <--- The Bypass Check
+    not is_exempt(result.resource)
 
     msg := sprintf("CIS 3.1 VIOLATION: Secure transfer (HTTPS) is disabled on '%s'.", [result.resource])
 }
