@@ -1,7 +1,7 @@
 pipeline {
     agent any
     environment {
-        AZURE_CREDENTIALS = credentials('azure-sp-credentials')
+        AZURE_CREDENTIALS = credentials('AZURE_CLIENT_ID')
         // Ensure OPA and tfsec are installed on the agent
     }
 
