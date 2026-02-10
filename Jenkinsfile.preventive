@@ -14,9 +14,12 @@ pipeline {
 
         stage('IaC Static Analysis') {
             steps {
-                sh 'echo "Running tfsec..."'
-                // Export results to JSON for OPA to read
-                sh '/usr/local/bin/tfsec . --format json > tfsec_results.json || true'   // "|| true" bypasses the tfsec scan
+                sh '''
+                   set -x
+                   echo "Running tfsec..."
+                   # Export results to JSON for OPA to read
+                   /usr/local/bin/tfsec . --format json > tfsec_results.json || true'   # "|| true" bypasses the tfsec scan
+                '''
             }
         }
 
