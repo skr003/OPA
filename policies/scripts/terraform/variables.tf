@@ -1,19 +1,17 @@
 variable "resource_group_name" {
-  default = "terraform-rg"
+  description = "The name of the resource group"
+  type        = string
+  default     = "rg-security-lab"
 }
 
 variable "location" {
-  default = "Central India" # Use a region allowed by your subscription
+  description = "The Azure region to deploy to"
+  type        = string
+  default     = "East US"
 }
 
 variable "prefix" {
-  default = "iacdemo"
-}
-
-variable "admin_username" {
-  default = "azureuser"
-}
-
-variable "ssh_public_key" {
-  default = "~/.ssh/id_rsa.pub"
+  description = "A prefix for resources to ensure uniqueness"
+  type        = string
+  default     = "secops"
 }
