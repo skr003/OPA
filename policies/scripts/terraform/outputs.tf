@@ -1,11 +1,13 @@
-output "resource_group" {
-  value = azurerm_resource_group.rg.name
+output "vulnerable_storage_id" {
+  description = "The ID of the insecure storage account"
+  value       = azurerm_storage_account.bad_storage.id
 }
 
-output "vm_name" {
-  value = azurerm_linux_virtual_machine.vm.name
+output "secure_storage_id" {
+  description = "The ID of the secure storage account"
+  value       = azurerm_storage_account.good_storage.id
 }
 
-output "private_ip" {
-  value = azurerm_network_interface.nic.private_ip_address
+output "security_status" {
+  value = "Run 'tfsec .' to see the difference between these two resources."
 }
