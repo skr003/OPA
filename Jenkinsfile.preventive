@@ -17,7 +17,7 @@ pipeline {
                 sh 'echo "Running tfsec..."'
                 // Export results to JSON for OPA to read
                 sh 'pwd'
-                sh 'tfsec .policies/scripts/terraform --format json > tfsec_results.json'
+                sh 'tfsec ./policies/scripts/terraform --format json > tfsec_results.json'
             }
         }
 
