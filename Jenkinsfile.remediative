@@ -1,0 +1,59 @@
+pipeline {
+    agent any
+    triggers {
+        cron('H * * * *') // Runs every hour
+    }
+    environment {
+        AZURE_CREDENTIALS = credentials('azure-sp-credentials')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Detect Drift (Azure Graph)') {
+            steps {
+                withCredentials([azureServicePrincipal('azure-sp-credentials')]) {
+                    sh 'az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID'
+                    
+                    // Query for non-compliant resources (Example: Storage Accounts allowing public access)
+                    sh '''
+                    az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > drift_results.json
+                    '''
+                }
+            }
+        }
+
+        stage('Map to CIS & Generate Fix') {
+            steps {
+                // Python script maps the drift JSON to a specific CIS Control ID
+                sh 'python3 scripts/cis_mapper.py --input drift_results.json --output remediation_script.sh'
+            }
+        }
+
+        stage('Execute Self-Healing') {
+            steps {
+                script {
+                    def driftCount = sh(script: 'cat drift_results.json | jq ". | length"', returnStdout: true).trim()
+                    
+                    if (driftCount != "0") {
+                        echo "Drift Detected! Executing Self-Healing..."
+                        // Execute the generated Azure CLI script
+                        sh 'bash remediation_script.sh'
+                    } else {
+                        echo "No Drift Detected. Environment is Compliant."
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            archiveArtifacts artifacts: 'drift_results.json, remediation_script.sh', allowEmptyArchive: true
+        }
+    }
+}
