@@ -17,8 +17,8 @@ pipeline {
                 sh 'echo "Running tfsec..."'
                 // Export results to JSON for OPA to read
                 sh 'pwd'
-                sh 'sudo curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash'
-                sh '/usr/local/bin/tfsec . --format json > tfsec_results.json'
+                //sh '/usr/local/bin/tfsec . --format json > tfsec_results.json'
+                sh '/usr/local/bin/tfsec . --format json > tfsec_results.json || true'
             }
         }
 
