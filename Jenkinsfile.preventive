@@ -40,7 +40,7 @@ pipeline {
         stage('Terraform Plan & Apply') {
             // Only runs if OPA check passes
             steps {
-                dir('terraform') {
+                dir('policies/scripts/terraform') {
                     sh 'terraform init'
                     sh 'terraform plan -out=tfplan'
                     // Uncomment below for auto-deploy, or use an input step for manual approval
