@@ -14,7 +14,7 @@ resource "azurerm_storage_account" "bad_storage" {
   account_replication_type = "LRS"
 
   # SECURITY FLAWS HERE:
-  allow_blob_public_access  = false          # <--- VIOLATION!
+  allow_nested_items_to_be_public  = false          # <--- VIOLATION!
   enable_https_traffic_only = true         # <--- VIOLATION!
   min_tls_version           = "TLS1_2"      # <--- VIOLATION!
   
