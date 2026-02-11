@@ -21,8 +21,10 @@ resource "azurerm_storage_account" "good_storage" {
   # but tfsec still flags them if the code is missing.
   # -------------------------------------------------------------
   
-  tfsec:ignore=AZU010  <-- Ignore "HTTPS Traffic Only" (Enforced by Azure)
-  tfsec:ignore=AZU013  <-- Ignore "Min TLS Version" (Enforced by Azure)
+  # Ignore "HTTPS Traffic Only" (Enforced by Azure)
+  tfsec:ignore:AZU010
+  # Ignore "Min TLS Version" (Enforced by Azure)
+  tfsec:ignore:AZU013
 
   # -------------------------------------------------------------
   # NETWORK & LOGGING
