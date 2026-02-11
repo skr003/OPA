@@ -10,6 +10,7 @@ resource "azurerm_storage_account" "bad_storage" {
   location                 = azurerm_resource_group.main.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+  min_tls_version          = "TLS1_2"
 
   # -------------------------------------------------------------
   # THE DEMO VIOLATION: PUBLIC ACCESS ENABLED
