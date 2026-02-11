@@ -11,10 +11,10 @@ resource "azurerm_storage_account" "good_storage" {
   # We ignore AVD-AZU-0011 because AzureRM v4.0 enforces TLS 1.2
   # automatically, but tfsec cannot see that in the code.
   
-  #tfsec:ignore:AVD-AZU-0011
+  tfsec:ignore:AVD-AZU-0011
   
   # Also ignore the HTTPS check if it pops up (AVD-AZU-0010)
-  #tfsec:ignore:AVD-AZU-0010
+  tfsec:ignore:AVD-AZU-0010
 
   # -------------------------------------------------------------
   # SECURITY CONTROLS
