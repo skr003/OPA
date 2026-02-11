@@ -1,10 +1,4 @@
 resource "azurerm_storage_account" "bad_storage" {
-  # -------------------------------------------------------------
-  # FALSE POSITIVE HANDLING (AzureRM v4.0 Defaults)
-  # -------------------------------------------------------------
-  #tfsec:ignore:AVD-AZU-0010 
-  #tfsec:ignore:AVD-AZU-0011
-
   name                     = "secopsbadstore" 
   resource_group_name      = azurerm_resource_group.main.name
   location                 = azurerm_resource_group.main.location
@@ -12,9 +6,15 @@ resource "azurerm_storage_account" "bad_storage" {
   account_replication_type = "LRS"
 
   # -------------------------------------------------------------
-  # THE DEMO VIOLATION: PUBLIC ACCESS ENABLED
+  # IGNORE NOISE (TLS False Positive)
   # -------------------------------------------------------------
-  allow_nested_items_to_be_public = true  # <--- The "Red Flag"
+  #tfsec:ignore:AVD-AZU-0011
+
+  # -------------------------------------------------------------
+  # THE REAL DEMO VIOLATION
+  # This is the specific line we want OPA to block!
+  # -------------------------------------------------------------
+  allow_nested_items_to_be_public = true 
 
   public_network_access_enabled = true
   
