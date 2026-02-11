@@ -10,6 +10,7 @@ resource "azurerm_storage_account" "good_storage" {
   location                 = azurerm_resource_group.main.location
   account_tier             = "Standard"
   account_replication_type = "GRS"
+  min_tls_version          = "TLS1_2"
 
   # Disable Public Access
   allow_nested_items_to_be_public = false
