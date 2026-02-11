@@ -16,30 +16,25 @@ resource "azurerm_storage_account" "good_storage" {
   infrastructure_encryption_enabled = true
 
   # -------------------------------------------------------------
-  # FALSE POSITIVE HANDLING (REQUIRED FOR v4.0)
-  # AzureRM v4.0 enforces TLS 1.2 and HTTPS by default, 
-  # but tfsec still flags them if the code is missing.
+  # FALSE POSITIVE HANDLING
   # -------------------------------------------------------------
+  # CRITICAL FIX: Ensure the '#' is present at the start of these lines!
   
-  # Ignore "HTTPS Traffic Only" (Enforced by Azure)
-  tfsec:ignore:AZU010
-  # Ignore "Min TLS Version" (Enforced by Azure)
-  tfsec:ignore:AZU013
+  #tfsec:ignore:AZU010
+  #tfsec:ignore:AZU013
 
   # -------------------------------------------------------------
   # NETWORK & LOGGING
   # -------------------------------------------------------------
   
-  # Allow public access to the resource endpoint, BUT filter it via firewall
   public_network_access_enabled = true
 
   network_rules {
     default_action = "Deny"
     bypass         = ["AzureServices", "Logging", "Metrics"]
-    ip_rules       = ["100.0.0.1"] # Represents a corporate VPN IP
+    ip_rules       = ["100.0.0.1"] 
   }
 
-  # Soft Delete (Data Recovery)
   blob_properties {
     delete_retention_policy {
       days = 7
@@ -50,7 +45,6 @@ resource "azurerm_storage_account" "good_storage" {
     versioning_enabled = true
   }
 
-  # Logging (Audit Trail)
   queue_properties {
     logging {
       delete                = true
