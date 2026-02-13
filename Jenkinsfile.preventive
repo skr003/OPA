@@ -1,9 +1,9 @@
 pipeline {
     agent any
-    environment {
-        AZURE_CREDENTIALS = credentials('AZURE_CLIENT_ID')
+    //environment {
+    //    AZURE_CREDENTIALS = credentials('AZURE_CLIENT_ID')
         // Ensure OPA and tfsec are installed on the agent
-    }
+    //}
 
     stages {
         stage('Checkout') {
