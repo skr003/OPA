@@ -56,8 +56,8 @@ pipeline {
             // Only runs if OPA check passes
             steps {
                 dir('policies/scripts/terraform') {
-                    sh 'terraform init --upgrade'
-                    sh 'terraform plan -out=tfplan'
+                    bat '"C:/Program Files/terraform/terraform.exe" init --upgrade'
+                    bat '"C:/Program Files/terraform/terraform.exe" plan -out=tfplan'
                     // Uncomment below for auto-deploy, or use an input step for manual approval
                     // sh 'terraform apply -auto-approve tfplan' 
                 }
