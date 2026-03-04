@@ -59,7 +59,7 @@ pipeline {
                     bat '"C:/Program Files/terraform/terraform.exe" init --upgrade'
                     bat '"C:/Program Files/terraform/terraform.exe" plan -out=tfplan'
                     // Uncomment below for auto-deploy, or use an input step for manual approval
-                    // sh 'terraform apply -auto-approve tfplan' 
+                    // sh '"C:/Program Files/terraform/terraform.exe" apply -auto-approve tfplan' 
                 }
             }
         }
