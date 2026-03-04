@@ -23,7 +23,7 @@ pipeline {
 
         stage('OPA Policy Check') {
             steps {
-                sh 'echo "Evaluating against CIS Benchmarks..."'
+                bat 'echo "Evaluating against CIS Benchmarks..."'
                 // Evaluate the tfsec JSON output against the Rego policy
                 // If the query returns any violation, the command fails (exit 1)
                 script {
