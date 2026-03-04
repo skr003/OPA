@@ -14,7 +14,7 @@ pipeline {
 
         stage('IaC Static Analysis') {
             steps {
-                sh 'echo "Running tfsec..."'
+                bat 'echo "Running tfsec..."'
                 // Export results to JSON for OPA to read
                 sh 'pwd'
                 sh '/usr/local/bin/tfsec . --format json --include-passed > tfsec_results.json'
