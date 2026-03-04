@@ -26,7 +26,7 @@ pipeline {
                     echo "Evaluating tfsec results against OPA policies..."
                     // Changed 'sh' to 'bat'
                     // If Jenkins can't find 'opa', replace 'opa' with '"C:/path/to/opa.exe"'
-                    bat 'opa eval -f pretty -i tfsec_results.json -d policies/ "data.cis.azure.deny" > opa_results.json'
+                    bat '"C:/Program Files/OPA/opa.exe" eval -f pretty -i tfsec_results.json -d policies/ "data.cis.azure.deny" > opa_results.json'
                     
                     // Note: If you had a 'grep' command here to fail the pipeline, 
                     // Windows 'findstr' is the equivalent. 
