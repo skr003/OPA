@@ -39,9 +39,9 @@ pipeline {
             steps {
                 bat 'echo "Evaluating against CIS Benchmarks..."'
                 // Evaluate the tfsec JSON output against the Rego policy
-                // If the query returns any violation, the command fails (exit 1)
                 script {
-                    def opaResult = sh(script: 'opa eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.azure.deny" --format pretty', returnStdout: true)
+                    // Changed 'sh' to 'bat' to execute natively on Windows
+                    def opaResult = bat(script: 'opa eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.azure.deny" --format pretty', returnStdout: true)
                     
                     if (opaResult.contains("CIS_Violation")) {
                         error "Pipeline Failed: CIS Policy Violations Found! \n ${opaResult}"
