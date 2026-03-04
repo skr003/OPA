@@ -20,7 +20,7 @@ pipeline {
                 bat '"C:/Program Files/tfsec/tfsec.exe" . --format json --include-passed > tfsec_results.json'
             }
         }
-        stage('OPA Policy Check') {
+        stage('OPA Policy Check Win') {
             steps {
                 script {
                     echo "Evaluating tfsec results against OPA policies..."
