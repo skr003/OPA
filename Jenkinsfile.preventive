@@ -17,7 +17,7 @@ pipeline {
                 bat 'echo "Running tfsec..."'
                 // Export results to JSON for OPA to read
                 // sh '/usr/local/bin/tfsec . --format json --include-passed > tfsec_results.json'
-                bat 'tfsec . --format json > tfsec_results.json'
+                bat 'C:\Program Files\tfsec . --format json > tfsec_results.json'
             }
         }
 
