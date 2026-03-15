@@ -3,10 +3,16 @@ import os
 import sys
 
 def generate_fix(input_file, output_filename):
-    # Calculate root workspace path
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    input_path = os.path.join(base_dir, input_file)
-    output_path = os.path.join(base_dir, output_filename)
+    # Calculate the project root (one level up from scripts/)
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    # Path to the outputs folder
+    outputs_dir = os.path.join(base_dir, "outputs")
+    
+    input_path = os.path.join(outputs_dir, input_file)
+    output_path = os.path.join(outputs_dir, output_filename)
+
+    print(f"Looking for data in: {input_path}")
 
     if not os.path.exists(input_path):
         print(f"ERROR: {input_file} not found.")
