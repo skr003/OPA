@@ -2,11 +2,10 @@ pipeline {
     agent any
 
     environment {
-        // Replace these with your actual Service Principal values
-        ARM_SUBSCRIPTION_ID = "your-subscription-id"
-        ARM_TENANT_ID       = "your-tenant-id"
-        ARM_CLIENT_ID       = "your-app-id"
-        ARM_CLIENT_SECRET   = "your-password"
+        // Azure Credentials 
+        AZURE_CLIENT_ID = credentials('AZURE_CLIENT_ID')
+        AZURE_CLIENT_SECRET = credentials('AZURE_CLIENT_SECRET')
+        AZURE_TENANT_ID = credentials('AZURE_TENANT_ID')
     }
 
     stages {
