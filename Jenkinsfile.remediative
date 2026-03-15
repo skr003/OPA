@@ -41,7 +41,7 @@ pipeline {
     post {
         always {
             // Clean up files so next run starts fresh
-            bat 'del drift_results.json'
+            //bat 'del drift_results.json'
         }
     }
 }
