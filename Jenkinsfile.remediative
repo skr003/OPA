@@ -11,6 +11,12 @@ pipeline {
     }
 
     stages {
+        stage('Setup Dependencies') {
+            steps {
+                bat 'C:/Users/admin/AppData/Local/Programs/Python/Python312/Scripts/pip.exe install -r policies/scripts/requirements.txt'
+            }
+        }
+
         stage('Detect Drift (Azure Graph)') {
             steps {
                 withCredentials([azureServicePrincipal('azure-sp-credentials')]) {
