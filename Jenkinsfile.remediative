@@ -8,12 +8,6 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Detect Drift (Azure Graph)') {
             steps {
                 withCredentials([azureServicePrincipal('azure-sp-credentials')]) {
