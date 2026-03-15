@@ -1,0 +1,9 @@
+# For handling environment variables and system paths
+os-sys
+
+# For advanced JSON parsing (optional but helpful)
+simplejson
+
+# If you decide to use the Azure SDK instead of CLI later
+azure-mgmt-resource
+azure-identity
