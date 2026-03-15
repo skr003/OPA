@@ -16,7 +16,7 @@ pipeline {
                 // Using 'bat' for Windows. The Azure CLI uses the environment variables above.
                 bat '''
                 az login --service-principal -u "%AZURE_CLIENT_ID%" -p "%AZURE_CLIENT_SECRET%" --tenant "%AZURE_TENANT_ID%"
-                call az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > drift_results.json
+                //call az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > drift_results.json
                 az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > drift_results.json                '''
             }
         }
