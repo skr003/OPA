@@ -52,4 +52,4 @@ pipeline {
             }
         }
     }
-} // <--- This final bracket is usually what is missing!
+}
