@@ -4,7 +4,10 @@ pipeline {
         cron('H * * * *') // Runs every hour
     }
     environment {
-        AZURE_CREDENTIALS = credentials('AZURE_CLIENT_ID')
+        // Azure Credentials 
+        AZURE_CLIENT_ID = credentials('AZURE_CLIENT_ID')
+        AZURE_CLIENT_SECRET = credentials('AZURE_CLIENT_SECRET')
+        AZURE_TENANT_ID = credentials('AZURE_TENANT_ID')
     }
 
     stages {
