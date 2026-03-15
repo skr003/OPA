@@ -25,7 +25,7 @@ pipeline {
             steps {
                 echo "Running Python Mapper to identify remediation steps..."
                 // Ensure 'python' is in your Windows PATH or use absolute path
-                bat 'python cis_mapper.py'
+                bat '"C:/Users/admin/AppData/Local/Programs/Python/Python312/python.exe" cis_mapper.py'
             }
         }
 
