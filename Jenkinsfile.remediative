@@ -17,7 +17,9 @@ pipeline {
                     bat 'az login --service-principal -u "%AZURE_CLIENT_ID%" -p "%AZURE_CLIENT_SECRET%" --tenant "%AZURE_TENANT_ID%"'
                     
                     // Query for non-compliant resources (Example: Storage Accounts allowing public access)
-                    bat 'az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > drift_results.json'
+                    bat '''
+                    az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > drift_results.json'
+                    '''
                 }
             }
         }
