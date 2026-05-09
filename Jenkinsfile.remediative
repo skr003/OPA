@@ -6,75 +6,301 @@ pipeline {
         AZURE_CLIENT_ID     = credentials('AZURE_CLIENT_ID')
         AZURE_CLIENT_SECRET = credentials('AZURE_CLIENT_SECRET')
         AZURE_TENANT_ID     = credentials('AZURE_TENANT_ID')
-
-        // Path to your Python executable
-        PYTHON_EXE = "C:/Users/admin/AppData/Local/Programs/Python/Python312/python.exe"
+        TEAMS_WEBHOOK_URL   = credentials('TEAMS_WEBHOOK_URL')
+        PYTHON_EXE          = 'C:/Users/admin/AppData/Local/Programs/Python/Python312/python.exe'
     }
 
     stages {
+
+        // ---------------------------------------------------------------
+        // Workspace prep — clean previous run artifacts.
+        // ---------------------------------------------------------------
         stage('Initialize Workspace') {
             steps {
-                echo "Cleaning up previous run data..."
                 bat '''
                 if not exist outputs mkdir outputs
-                if exist outputs\\drift_results.json del /f /q outputs\\drift_results.json
-                if exist outputs\\remediate_drift.bat del /f /q outputs\\remediate_drift.bat
+                del /f /q outputs\\*.json 2>nul
+                del /f /q outputs\\*.bat  2>nul
+                echo [Init] Workspace ready.
                 '''
             }
         }
 
-        stage('Detect Infrastructure Drift') {
+        // ---------------------------------------------------------------
+        // Single login shared by all subsequent az calls (including those
+        // inside Python scripts via subprocess).
+        // ---------------------------------------------------------------
+        stage('Azure Login') {
             steps {
-                echo "Querying Azure Resource Graph for CIS 3.6 Violations..."
                 bat '''
                 @echo off
-                echo [AUTH] Logging in to Azure...
-                call az login --service-principal -u "%AZURE_CLIENT_ID%" -p "%AZURE_CLIENT_SECRET%" --tenant "%AZURE_TENANT_ID%"
-
-                echo [QUERY] Identifying storage accounts with Public Access enabled...
-                call az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > outputs/drift_results.json
-
-                echo ---------------------------------------------------
-                echo RAW DRIFT DATA DETECTED:
-                echo ---------------------------------------------------
-                type outputs\\drift_results.json
-                echo ---------------------------------------------------
+                echo [Auth] Authenticating to Azure...
+                call az login --service-principal ^
+                    -u "%AZURE_CLIENT_ID%" ^
+                    -p "%AZURE_CLIENT_SECRET%" ^
+                    --tenant "%AZURE_TENANT_ID%"
+                call az account set --subscription "%ARM_SUBSCRIPTION_ID%"
+                echo [Auth] Login successful.
                 '''
             }
         }
 
-        stage('CIS Benchmark Mapping') {
-            steps {
-                echo "Running Python Mapper to generate Windows remediation script..."
-                bat '"%PYTHON_EXE%" scripts/cis_mapper.py'
+        // ---------------------------------------------------------------
+        // All four drift detectors run in parallel.
+        // Each writes its own <scenario>_drift.json + <scenario>_remediate.bat
+        // returnStatus: true keeps the stage green so all four always finish.
+        // ---------------------------------------------------------------
+        stage('Detect All Drift') {
+            parallel {
+
+                // Scenario 1 – Rogue Admin: open SSH/RDP on NSGs
+                stage('NSG Open Ports') {
+                    steps {
+                        bat(returnStatus: true,
+                            script: '"%PYTHON_EXE%" scripts/detect_nsg_drift.py')
+                    }
+                }
+
+                // Scenario 2 – Data Exfiltration: Storage HTTPS disabled
+                stage('Storage HTTPS') {
+                    steps {
+                        bat(returnStatus: true,
+                            script: '"%PYTHON_EXE%" scripts/detect_storage_drift.py')
+                    }
+                }
+
+                // Scenario 3 – Cost Control: VMs scaled outside baseline
+                stage('Resource Scaling') {
+                    steps {
+                        bat(returnStatus: true,
+                            script: '"%PYTHON_EXE%" scripts/detect_scaling_drift.py')
+                    }
+                }
+
+                // Scenario 4 – IAM Tampering: unauthorized high-priv roles
+                stage('IAM Role Assignments') {
+                    steps {
+                        bat(returnStatus: true,
+                            script: '"%PYTHON_EXE%" scripts/detect_iam_drift.py')
+                    }
+                }
             }
         }
 
-        stage('Remediate & Notify') {
+        // ---------------------------------------------------------------
+        // Scenario 5 – Snapshot the compliance score BEFORE any remediation.
+        // Visible on the dashboard as the "dip" in compliance percentage.
+        // ---------------------------------------------------------------
+        stage('Pre-Remediation Dashboard') {
+            steps {
+                bat '"%PYTHON_EXE%" scripts/generate_dashboard.py pre_remediation'
+                script {
+                    def dash = readFile('outputs/compliance_dashboard_latest.json')
+                    def pct  = dash.find(/"overall_compliance_pct"\s*:\s*(\d+)/) { _, v -> v }
+                    echo "=== PRE-REMEDIATION COMPLIANCE: ${pct ?: '?'}% ==="
+                }
+                archiveArtifacts artifacts: 'outputs/compliance_dashboard_pre_remediation.json',
+                                 allowEmptyArchive: true
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // SCENARIO 1 – Self-Healing: auto-close the offending NSG rules.
+        // Runs only when nsg_drift.json reports a violation.
+        // ---------------------------------------------------------------
+        stage('Auto-Fix: NSG Open Ports') {
+            when {
+                expression {
+                    fileExists('outputs/nsg_drift.json') &&
+                    readFile('outputs/nsg_drift.json').contains('"drifted": true')
+                }
+            }
+            steps {
+                echo "=== [Scenario 1] Rogue Admin detected — self-healing NSG rules ==="
+                bat '''
+                echo --- PREVIEW: NSG remediation commands ---
+                type outputs\\nsg_remediate.bat
+                echo ------------------------------------------
+                call outputs\\nsg_remediate.bat
+                '''
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // SCENARIO 2 – Manual Approval: an admin must approve before the
+        // storage HTTPS fix is applied (demonstrates governance gate).
+        // Times out after 30 minutes to avoid blocking the pipeline.
+        // ---------------------------------------------------------------
+        stage('Manual Approval: Storage HTTPS Fix') {
+            when {
+                expression {
+                    fileExists('outputs/storage_drift.json') &&
+                    readFile('outputs/storage_drift.json').contains('"drifted": true')
+                }
+            }
             steps {
                 script {
-                    if (fileExists('outputs/remediate_drift.bat')) {
-                        echo "DRIFT DETECTED: Executing automated remediation..."
+                    echo "=== [Scenario 2] Storage HTTPS drift detected — awaiting admin approval ==="
+                    bat 'type outputs\\storage_drift.json'
 
-                        echo "--- PREVIEW OF REMEDIATION COMMANDS ---"
-                        bat 'type outputs\\remediate_drift.bat'
-                        echo "---------------------------------------"
-
-                        bat 'call outputs\\remediate_drift.bat'
-                    } else {
-                        echo "COMPLIANCE VERIFIED: No drifting resources found. No remediation needed."
+                    def approved = false
+                    try {
+                        timeout(time: 30, unit: 'MINUTES') {
+                            input(
+                                message: 'Storage account(s) have HTTPS-only disabled. Apply the remediation script?',
+                                ok: 'Approve & Apply',
+                                parameters: [
+                                    text(name: 'APPROVER_NOTE',
+                                         defaultValue: '',
+                                         description: 'Optional: reason for approval')
+                                ]
+                            )
+                        }
+                        approved = true
+                    } catch (err) {
+                        echo "Approval timed out or was rejected — storage drift will persist until next run."
                     }
+
+                    if (approved) {
+                        echo "--- PREVIEW: Storage remediation commands ---"
+                        bat 'type outputs\\storage_remediate.bat'
+                        bat 'call outputs\\storage_remediate.bat'
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // SCENARIO 3 – Cost Drift: no auto-remediation — notify the DevOps
+        // channel and produce the revert script for human review.
+        // ---------------------------------------------------------------
+        stage('Notify: Resource Scaling Drift') {
+            when {
+                expression {
+                    fileExists('outputs/scaling_drift.json') &&
+                    readFile('outputs/scaling_drift.json').contains('"drifted": true')
+                }
+            }
+            steps {
+                script {
+                    echo "=== [Scenario 3] Cost drift detected — revert script generated ==="
+                    bat 'type outputs\\scaling_drift.json'
+                    echo "Revert script (requires manual execution after DevOps review):"
+                    bat 'type outputs\\scaling_remediate.bat'
+                    unstable("Cost drift: VM(s) scaled beyond IaC baseline — DevOps review required.")
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // SCENARIO 4 – IAM: alert security team and generate the role-
+        // removal script. Critical severity → build marked unstable.
+        // ---------------------------------------------------------------
+        stage('Alert: IAM Privilege Escalation') {
+            when {
+                expression {
+                    fileExists('outputs/iam_drift.json') &&
+                    readFile('outputs/iam_drift.json').contains('"drifted": true')
+                }
+            }
+            steps {
+                script {
+                    echo "=== [Scenario 4] CRITICAL: Unauthorized IAM assignments detected ==="
+                    bat 'type outputs\\iam_drift.json'
+                    echo "Generated removal script — execute after security team review:"
+                    bat 'type outputs\\iam_remediate.bat'
+                    unstable("IAM privilege escalation detected — security team alerted.")
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Post-remediation: re-run all detectors to measure what was fixed.
+        // ---------------------------------------------------------------
+        stage('Post-Remediation Detection') {
+            steps {
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_nsg_drift.py')
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_storage_drift.py')
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_scaling_drift.py')
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_iam_drift.py')
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Scenario 5 – Final dashboard shows the recovery.
+        // Compare pre vs post compliance percentage in the Teams message.
+        // ---------------------------------------------------------------
+        stage('Post-Remediation Dashboard') {
+            steps {
+                bat '"%PYTHON_EXE%" scripts/generate_dashboard.py post_remediation'
+                script {
+                    def dash = readFile('outputs/compliance_dashboard_latest.json')
+                    def pct  = dash.find(/"overall_compliance_pct"\s*:\s*(\d+)/) { _, v -> v }
+                    echo "=== POST-REMEDIATION COMPLIANCE: ${pct ?: '?'}% ==="
+                }
+                archiveArtifacts artifacts: 'outputs/*.json, outputs/*.bat',
+                                 allowEmptyArchive: true
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Teams notification — color-coded card summarising both snapshots.
+        // ---------------------------------------------------------------
+        stage('Notify Teams') {
+            steps {
+                script {
+                    def preDash  = fileExists('outputs/compliance_dashboard_pre_remediation.json')
+                                   ? readFile('outputs/compliance_dashboard_pre_remediation.json') : '{}'
+                    def postDash = readFile('outputs/compliance_dashboard_latest.json')
+
+                    def prePct  = preDash.find(/"overall_compliance_pct"\s*:\s*(\d+)/)  { _, v -> v } ?: '?'
+                    def postPct = postDash.find(/"overall_compliance_pct"\s*:\s*(\d+)/) { _, v -> v } ?: '?'
+
+                    def buildResult = currentBuild.currentResult
+                    def themeColor  = (buildResult == 'SUCCESS')  ? '00CC44' :
+                                      (buildResult == 'UNSTABLE') ? 'FFA500' : 'CC0000'
+
+                    def body = "<b>Compliance before remediation:</b> ${prePct}%<br>" +
+                               "<b>Compliance after remediation:</b>  ${postPct}%<br><br>" +
+                               "<b>Scenarios checked:</b><br>" +
+                               "• [Scenario 1] NSG Open Ports — self-healing applied<br>" +
+                               "• [Scenario 2] Storage HTTPS  — manual approval gate<br>" +
+                               "• [Scenario 3] VM Scaling     — DevOps notified<br>" +
+                               "• [Scenario 4] IAM Tampering  — security team alerted<br><br>" +
+                               "See build artifacts for full drift JSON and remediation scripts."
+
+                    def payload = groovy.json.JsonOutput.toJson([
+                        "@type"     : "MessageCard",
+                        "@context"  : "http://schema.org/extensions",
+                        "themeColor": themeColor,
+                        "summary"   : "CSPM Remediation — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        "sections"  : [[
+                            "activityTitle"   : "CSPM Remediation Report — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            "activitySubtitle": "Build result: ${buildResult}",
+                            "activityText"    : body,
+                            "markdown"        : true
+                        ]]
+                    ])
+                    writeFile file: 'outputs/teams_payload.json', text: payload
+                    bat(returnStatus: true,
+                        script: 'curl -s -X POST -H "Content-Type: application/json" -d @outputs\\teams_payload.json %TEAMS_WEBHOOK_URL%')
                 }
             }
         }
     }
 
     post {
-        always {
-            echo "Pipeline complete. Results are stored in the 'outputs/' directory."
-        }
         success {
-            echo "Infrastructure is now compliant with CIS Azure Foundations Benchmark v3.0."
+            echo "All detected drift was remediated. Environment is fully compliant."
+        }
+        unstable {
+            echo "Partial remediation complete. Items marked UNSTABLE require manual review (scaling drift or IAM — see artifacts)."
+        }
+        failure {
+            echo "Pipeline error — review stage logs. No changes may have been applied."
+        }
+        always {
+            echo "Artifacts saved to outputs/. Dashboard: outputs/compliance_dashboard_latest.json"
         }
     }
 }
