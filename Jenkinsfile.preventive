@@ -71,8 +71,7 @@ pipeline {
                     def warnings = []
 
                     // ---- tfsec ------------------------------------------------
-                    def tfsecData = new groovy.json.JsonSlurperClassic()
-                                        .parseText(readFile('tfsec_results.json'))
+                    def tfsecData = readJSON file: 'tfsec_results.json'
                     tfsecData.results?.each { r ->
                         def sev = (r.severity ?: 'UNKNOWN').toUpperCase()
                         def loc = "${r.location?.filename}:${r.location?.start_line}"
@@ -82,11 +81,11 @@ pipeline {
                     }
 
                     // ---- Checkov ----------------------------------------------
+                    // checkov may prepend non-JSON text; strip it before parsing.
                     def checkovRaw  = readFile('checkov_results.json')
                     def jsonStart   = checkovRaw.indexOf('{')
                     if (jsonStart >= 0) {
-                        def checkovData = new groovy.json.JsonSlurperClassic()
-                                              .parseText(checkovRaw.substring(jsonStart))
+                        def checkovData = readJSON text: checkovRaw.substring(jsonStart)
                         checkovData.results?.failed_checks?.each { c ->
                             // Checkov stores severity at check level (v3.x) or
                             // at result level (older); fall back to MEDIUM.
