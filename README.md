@@ -50,7 +50,7 @@ OPA-main/
 | CI/CD | Jenkins (Windows agent) |
 | Scripting | Python 3.12, Windows Batch |
 | Cloud API | Azure CLI, Azure Resource Graph |
-| Notifications | Slack (incoming webhook) |
+| Notifications | Microsoft Teams (incoming webhook) |
 
 ---
 
@@ -76,7 +76,7 @@ OPA-main/
 | `AZURE_CLIENT_ID` | remediative | Service principal App ID |
 | `AZURE_CLIENT_SECRET` | remediative | Service principal secret |
 | `AZURE_TENANT_ID` | remediative | Azure AD tenant ID |
-| `SLACK_WEBHOOK_URL` | preventive | Slack incoming webhook URL |
+| `TEAMS_WEBHOOK_URL` | preventive | Teams incoming webhook URL |
 
 The service principal requires **Reader** access to query Azure Resource Graph and **Contributor** access on target storage accounts for remediation.
 
@@ -98,7 +98,7 @@ Runs on every pull request or push to a protected branch. Demonstrates five laye
 | 2 — Insecure Cloud Defaults | tfsec + Checkov catch encryption-off, public access, etc. with exact file:line | CRITICAL/HIGH → fail fast |
 | 3 — VM Size Policy | OPA blocks oversized VMs in dev/staging regardless of security status | Cost violation → blocked |
 | 4 — Missing Tags | OPA rejects resources missing `Environment`, `CostCenter`, or `ManagedBy` | Governance violation → blocked |
-| 5 — Advise & Notify | MEDIUM/LOW findings deploy successfully but fire a Slack advisory message | Non-blocking warning |
+| 5 — Advise & Notify | MEDIUM/LOW findings deploy successfully but fire a Teams advisory message | Non-blocking warning |
 
 **Stages:**
 
@@ -108,7 +108,7 @@ Runs on every pull request or push to a protected branch. Demonstrates five laye
 4. **Terraform Plan** — generates `tfplan.json` and `env_config.json` for OPA plan-based checks
 5. **OPA Policy Checks** — three checks in parallel: CIS Compliance, VM Size Policy, Mandatory Tags
 6. **Terraform Apply** — reuses the pre-validated plan; only reached if every check above passes
-7. **Notify Warnings** — posts advisory findings to Slack; conditional on warnings existing; build stays GREEN
+7. **Notify Warnings** — posts advisory findings to Teams (MessageCard); conditional on warnings existing; build stays GREEN
 
 Set `ENVIRONMENT = 'dev' | 'staging' | 'prod'` in the pipeline env block to control which VM-size allowlist OPA enforces.
 
@@ -181,6 +181,6 @@ The `terraform/` directory contains two intentionally contrasting storage accoun
 | `warnings.txt` | Evaluate stage (Stage 3, preventive) | MEDIUM/LOW findings for Slack notification |
 | `env_config.json` | Terraform Plan stage (Stage 4, preventive) | `{"config":{"environment":"dev"}}` — OPA environment context |
 | `tfplan.json` | Terraform (Stage 4, preventive) | Full Terraform plan in JSON — OPA VM size + tags input |
-| `slack_payload.json` | Notify Warnings stage (Stage 7, preventive) | Slack message payload |
+| `teams_payload.json` | Notify Warnings stage (Stage 7, preventive) | Teams MessageCard payload |
 | `outputs/drift_results.json` | Azure CLI (Stage 2, remediative) | Resource Graph query results |
 | `outputs/remediate_drift.bat` | `cis_mapper.py` (Stage 3, remediative) | Azure CLI remediation commands — only created when drift is found |

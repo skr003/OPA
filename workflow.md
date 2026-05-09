@@ -37,7 +37,7 @@ Developer pushes Terraform code
 │                                                                     │
 │    CRITICAL / HIGH  ──→  blocking[]     MEDIUM / LOW  ──→  warnings[] │
 │                                                                     │
-│  Writes warnings.txt (consumed by Slack notification in Stage 7)    │
+│  Writes warnings.txt (consumed by Teams notification in Stage 7)    │
 └──────────┬────────────────────────────────────────┬────────────────┘
            │  blocking = []                         │  blocking has entries
            │                                        ▼
@@ -113,7 +113,7 @@ Developer pushes Terraform code
 │  Stage 7: Notify Warnings  [SCENARIO 5]                             │
 │  (runs only when HAS_WARNINGS = true)                               │
 │                                                                     │
-│  Reads warnings.txt → builds Slack JSON payload                     │
+│  Reads warnings.txt → builds Teams MessageCard payload              │
 │  curl POST → SLACK_WEBHOOK_URL                                      │
 │                                                                     │
 │  Build stays GREEN. Team triages at their own pace.                 │
@@ -126,8 +126,8 @@ Developer pushes Terraform code
 |----------|--------|---------|
 | CRITICAL | tfsec or Checkov | Blocks pipeline — `rule_id \| description \| file:line` printed |
 | HIGH | tfsec or Checkov | Blocks pipeline — `rule_id \| description \| file:line` printed |
-| MEDIUM | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Slack advisory |
-| LOW | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Slack advisory |
+| MEDIUM | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Teams advisory |
+| LOW | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Teams advisory |
 
 ### CIS Rule Evaluation (Stage 5 — CIS Compliance check)
 
@@ -258,7 +258,7 @@ Azure Storage Account(s)
               ┌────────────▼──┐       ┌──────────▼─────────────┐
               │  Terraform    │       │  Block deployment       │
               │  Apply +      │       │  Scenario 2: security  │
-              │  Slack notify │       │  Scenario 3: VM cost   │
+              │  Teams notify │       │  Scenario 3: VM cost   │
               │  if warnings  │       │  Scenario 4: tags      │
               └────────┬──────┘       └────────────────────────┘
                        │
@@ -290,7 +290,7 @@ Azure Storage Account(s)
 | OPA — VM Size | Preventive | `tfplan.json`, `policies/vm_size.rego`, `env_config.json` | — |
 | OPA — Tags | Preventive | `tfplan.json`, `policies/tags.rego` | — |
 | Terraform Apply | Preventive | `terraform/tfplan` | Azure resources |
-| Notify Warnings | Preventive | `warnings.txt` | `slack_payload.json` |
+| Notify Warnings | Preventive | `warnings.txt` | `teams_payload.json` |
 | Init Workspace | Remediative | — | `outputs/` directory |
 | Drift Detection | Remediative | Azure live state | `outputs/drift_results.json` |
 | CIS Mapping | Remediative | `outputs/drift_results.json` | `outputs/remediate_drift.bat` (only if drift found) |

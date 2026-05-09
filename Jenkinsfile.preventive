@@ -6,7 +6,7 @@ pipeline {
         OPA_EXE           = '"C:/Program Files/OPA/opa.exe"'
         TF_EXE            = '"C:/Program Files/terraform/terraform.exe"'
         CHECKOV_EXE       = 'checkov'
-        SLACK_WEBHOOK_URL = credentials('SLACK_WEBHOOK_URL')
+        TEAMS_WEBHOOK_URL = credentials('TEAMS_WEBHOOK_URL')
 
         // Controls which VM-size allowlist OPA enforces (Scenario 3).
         // In production, derive this from the branch name or a Jenkins parameter.
@@ -216,8 +216,9 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         // -------------------------------------------------------------------
         // SCENARIO 5 – Advise & Notify.
         // Deployment succeeded but advisory (MEDIUM/LOW) findings exist.
-        // One Slack message is sent with all warnings so the team can triage
+        // One Teams message is sent with all warnings so the team can triage
         // at their own pace.  The build remains GREEN.
+        // Teams uses the MessageCard schema (distinct from Slack's payload).
         // -------------------------------------------------------------------
         stage('Notify Warnings') {
             when {
@@ -227,12 +228,19 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
                 script {
                     def warningText = readFile('warnings.txt')
                     def payload = groovy.json.JsonOutput.toJson([
-                        text: ":warning: *Advisory warnings — ${env.JOB_NAME} #${env.BUILD_NUMBER}*\n\n" +
-                              "Deployment succeeded. The following non-critical findings were detected " +
-                              "and should be reviewed at your earliest convenience:\n\n${warningText}"
+                        "@type"    : "MessageCard",
+                        "@context" : "http://schema.org/extensions",
+                        "themeColor": "FFA500",
+                        "summary"  : "Advisory warnings detected",
+                        "sections" : [[
+                            "activityTitle"   : "⚠️ Advisory warnings — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            "activitySubtitle": "Deployment succeeded. Non-critical findings require review.",
+                            "activityText"    : warningText.replace('\n', '<br>'),
+                            "markdown"        : true
+                        ]]
                     ])
-                    writeFile file: 'slack_payload.json', text: payload
-                    bat 'curl -s -X POST -H "Content-Type: application/json" -d @slack_payload.json %SLACK_WEBHOOK_URL%'
+                    writeFile file: 'teams_payload.json', text: payload
+                    bat 'curl -s -X POST -H "Content-Type: application/json" -d @teams_payload.json %TEAMS_WEBHOOK_URL%'
                 }
             }
         }
