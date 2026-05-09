@@ -7,18 +7,13 @@ pipeline {
         TF_EXE            = '"C:/Program Files/terraform/terraform.exe"'
         CHECKOV_EXE       = 'checkov'
         TEAMS_WEBHOOK_URL = credentials('TEAMS_WEBHOOK_URL')
-
-        // Controls which VM-size allowlist OPA enforces (Scenario 3).
-        // In production, derive this from the branch name or a Jenkins parameter.
         ENVIRONMENT       = 'dev'
     }
 
     stages {
 
         // -------------------------------------------------------------------
-        // SCENARIO 1 – "Perfect PR" entry point.
-        // Every build — compliant or not — starts here.  A fully compliant
-        // commit will travel through every stage without a single failure.
+        // SCENARIO 1 – Entry point. Every build starts here.
         // -------------------------------------------------------------------
         stage('Checkout') {
             steps {
@@ -27,26 +22,21 @@ pipeline {
         }
 
         // -------------------------------------------------------------------
-        // SCENARIO 2 – Catching Insecure Cloud Defaults.
-        // tfsec and Checkov run in parallel to cut wall-clock time.
-        // Both write JSON results consumed by the next stage.
-        // Neither command fails the build here; severity triage happens next.
+        // SCENARIO 2 – IaC Static Analysis.
+        // tfsec and Checkov run in parallel. Both write JSON that feeds the
+        // next stage. Neither fails the build directly.
         // -------------------------------------------------------------------
         stage('IaC Static Analysis') {
             parallel {
 
                 stage('tfsec') {
                     steps {
-                        // Scans terraform/ and tags each finding with an AVD
-                        // rule ID (e.g. AVD-AZU-0012) and severity.
                         bat "${env.TFSEC_EXE} terraform --format json --include-passed > tfsec_results.json"
                     }
                 }
 
                 stage('Checkov') {
                     steps {
-                        // returnStatus: true prevents the step from failing on non-zero exit.
-                        // --soft-fail handles check failures; returnStatus handles parse/runtime errors.
                         bat(returnStatus: true,
                             script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>checkov_error.log")
                     }
@@ -55,72 +45,64 @@ pipeline {
         }
 
         // -------------------------------------------------------------------
-        // SCENARIO 2 (blocking gate) + SCENARIO 5 (advisory collection).
-        //
-        // CRITICAL / HIGH  → added to 'blocking' list → pipeline fails fast
-        //                    with exact filename:line so the developer can
-        //                    locate and fix the vulnerability immediately.
-        //
-        // MEDIUM / LOW     → added to 'warnings' list → persisted to
-        //                    warnings.txt for Slack notification after deploy.
+        // SCENARIO 2 – Triage findings.
+        // CRITICAL/HIGH  → blocking → build marked UNSTABLE (not FAILURE),
+        //                  pipeline continues so all checks still run.
+        // MEDIUM/LOW     → advisory → captured in warnings.txt.
+        // All findings persisted to findings.json for archiving.
         // -------------------------------------------------------------------
         stage('Evaluate Security Findings') {
             steps {
                 script {
-                    // Python parses both JSON files and writes blocking.txt / warnings.txt.
-                    // Exits 1 if CRITICAL/HIGH violations exist, 0 otherwise.
                     def exitCode = bat(returnStatus: true, script: 'python parse_findings.py')
-
-                    def warningsContent = readFile('warnings.txt').trim()
-                    env.HAS_WARNINGS = (warningsContent.length() > 0).toString()
+                    def warningText = readFile('warnings.txt').trim()
+                    env.HAS_WARNINGS = (warningText.length() > 0).toString()
 
                     if (exitCode != 0) {
-                        def blockingContent = readFile('blocking.txt').trim()
-                        error "STATIC ANALYSIS FAILED — blocking violation(s) found:\n\n${blockingContent}"
+                        def blockingText = readFile('blocking.txt').trim()
+                        echo "BLOCKING VIOLATIONS:\n${blockingText}"
+                        unstable("Static analysis: blocking violation(s) found — see findings.json")
+                    } else {
+                        def warnCount = warningText ? warningText.split('\n').length : 0
+                        echo "Static analysis passed. ${warnCount} advisory finding(s)."
                     }
-                    echo "Static analysis passed. Advisory finding(s): ${warningsContent ? warningsContent.split('\n').length : 0}"
                 }
             }
         }
 
         // -------------------------------------------------------------------
-        // Generate the Terraform execution plan and convert it to JSON.
-        // The plan JSON is the authoritative input for the OPA cost and
-        // governance checks below (Scenarios 3 and 4).
-        //
-        // env_config.json carries the current environment name so OPA can
-        // enforce the correct VM-size allowlist.
+        // Generate Terraform plan. Used as input for OPA checks below.
+        // Wrapped in catchError so OPA can still run and report even if
+        // Terraform cannot connect (e.g., no Azure credentials in CI).
         // -------------------------------------------------------------------
         stage('Terraform Plan') {
             steps {
-                script {
-                    writeFile file: 'env_config.json',
-                              text: groovy.json.JsonOutput.toJson([
-                                  config: [environment: env.ENVIRONMENT]
-                              ])
-                }
-                dir('terraform') {
-                    bat "${env.TF_EXE} init -upgrade -input=false"
-                    bat "${env.TF_EXE} plan -out=tfplan -input=false"
-                    bat "${env.TF_EXE} show -json tfplan > ../tfplan.json"
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    script {
+                        writeFile file: 'env_config.json',
+                                  text: groovy.json.JsonOutput.toJson([
+                                      config: [environment: env.ENVIRONMENT]
+                                  ])
+                    }
+                    dir('terraform') {
+                        bat "${env.TF_EXE} init -upgrade -input=false"
+                        bat "${env.TF_EXE} plan -out=tfplan -input=false"
+                        bat "${env.TF_EXE} show -json tfplan > ../tfplan.json"
+                    }
                 }
             }
         }
 
         // -------------------------------------------------------------------
-        // Three OPA checks run in parallel against two different inputs:
-        //
-        //  CIS Compliance  (Scenario 2) — policy-layer re-check on tfsec JSON
-        //  VM Size Policy  (Scenario 3) — cost control on the Terraform plan
-        //  Mandatory Tags  (Scenario 4) — governance check on the plan
-        //
-        // Any single failure blocks the apply; the developer sees exactly
-        // which policy was violated and why.
+        // SCENARIO 2/3/4 – OPA Policy Checks (parallel).
+        // Each check writes its own JSON result file.
+        // Violations mark the build UNSTABLE (not FAILURE) so all three
+        // checks always complete and the archive stage always runs.
         // -------------------------------------------------------------------
         stage('OPA Policy Checks') {
             parallel {
 
-                // Scenario 2 — security policy layer (CIS Azure Benchmark)
+                // Scenario 2 — CIS Azure Benchmark re-check on tfsec output
                 stage('CIS Compliance') {
                     steps {
                         script {
@@ -130,42 +112,99 @@ ${env.OPA_EXE} eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.a
                                 returnStdout: true
                             ).trim()
                             echo "--- CIS Compliance ---\n${result}"
-                            if (result.contains('VIOLATION')) {
-                                error "OPA: CIS Compliance check failed. See violations above."
+                            def hasViolation = result.contains('VIOLATION')
+                            def violationLines = result.split('\n').findAll { it.trim().contains('VIOLATION') }
+                            writeFile file: 'opa_cis_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                                groovy.json.JsonOutput.toJson([
+                                    check      : 'CIS Compliance',
+                                    policy     : 'policies/cis_azure.rego',
+                                    status     : hasViolation ? 'FAILED' : 'PASSED',
+                                    violations : violationLines,
+                                    raw_output : result
+                                ])
+                            )
+                            if (hasViolation) {
+                                unstable("OPA: CIS Compliance check failed — see opa_cis_result.json")
                             }
                         }
                     }
                 }
 
-                // Scenario 3 — cost governance (VM size per environment)
+                // Scenario 3 — VM size cost control
                 stage('VM Size Policy') {
                     steps {
                         script {
+                            if (!fileExists('tfplan.json')) {
+                                echo "Skipping VM Size Policy — tfplan.json unavailable."
+                                writeFile file: 'opa_vm_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                                    groovy.json.JsonOutput.toJson([
+                                        check : 'VM Size Policy',
+                                        policy: 'policies/vm_size.rego',
+                                        status: 'SKIPPED',
+                                        reason: 'tfplan.json not produced (Terraform Plan failed)'
+                                    ])
+                                )
+                                return
+                            }
                             def result = bat(
                                 script: """@echo off
 ${env.OPA_EXE} eval -i tfplan.json -d policies/vm_size.rego -d env_config.json "data.policy.vm_size.deny" --format pretty""",
                                 returnStdout: true
                             ).trim()
                             echo "--- VM Size Policy ---\n${result}"
-                            if (result.contains('VIOLATION')) {
-                                error "OPA: VM Size Policy check failed. See violations above."
+                            def hasViolation = result.contains('VIOLATION')
+                            def violationLines = result.split('\n').findAll { it.trim().contains('VIOLATION') }
+                            writeFile file: 'opa_vm_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                                groovy.json.JsonOutput.toJson([
+                                    check      : 'VM Size Policy',
+                                    policy     : 'policies/vm_size.rego',
+                                    status     : hasViolation ? 'FAILED' : 'PASSED',
+                                    violations : violationLines,
+                                    raw_output : result
+                                ])
+                            )
+                            if (hasViolation) {
+                                unstable("OPA: VM Size Policy check failed — see opa_vm_result.json")
                             }
                         }
                     }
                 }
 
-                // Scenario 4 — operational governance (mandatory resource tags)
+                // Scenario 4 — Mandatory resource tags governance
                 stage('Mandatory Tags') {
                     steps {
                         script {
+                            if (!fileExists('tfplan.json')) {
+                                echo "Skipping Mandatory Tags — tfplan.json unavailable."
+                                writeFile file: 'opa_tags_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                                    groovy.json.JsonOutput.toJson([
+                                        check : 'Mandatory Tags',
+                                        policy: 'policies/tags.rego',
+                                        status: 'SKIPPED',
+                                        reason: 'tfplan.json not produced (Terraform Plan failed)'
+                                    ])
+                                )
+                                return
+                            }
                             def result = bat(
                                 script: """@echo off
 ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny" --format pretty""",
                                 returnStdout: true
                             ).trim()
                             echo "--- Mandatory Tags ---\n${result}"
-                            if (result.contains('VIOLATION')) {
-                                error "OPA: Mandatory Tags check failed. See violations above."
+                            def hasViolation = result.contains('VIOLATION')
+                            def violationLines = result.split('\n').findAll { it.trim().contains('VIOLATION') }
+                            writeFile file: 'opa_tags_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                                groovy.json.JsonOutput.toJson([
+                                    check      : 'Mandatory Tags',
+                                    policy     : 'policies/tags.rego',
+                                    status     : hasViolation ? 'FAILED' : 'PASSED',
+                                    violations : violationLines,
+                                    raw_output : result
+                                ])
+                            )
+                            if (hasViolation) {
+                                unstable("OPA: Mandatory Tags check failed — see opa_tags_result.json")
                             }
                         }
                     }
@@ -174,11 +213,26 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         }
 
         // -------------------------------------------------------------------
-        // SCENARIO 1 – "Perfect PR" complete.
-        // All gates passed; reuse the pre-validated plan artifact so no drift
-        // is possible between the check and the apply.
+        // Archive all JSON result files as build artifacts so they are
+        // accessible from the Jenkins build page regardless of build outcome.
+        // -------------------------------------------------------------------
+        stage('Archive Security Report') {
+            steps {
+                archiveArtifacts artifacts: 'findings.json, tfsec_results.json, checkov_results.json, opa_cis_result.json, opa_vm_result.json, opa_tags_result.json',
+                                 allowEmptyArchive: true
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // SCENARIO 1 – Terraform Apply.
+        // Only runs when every prior stage passed (build result == SUCCESS).
+        // Any unstable() call above will cause this stage to be skipped,
+        // ensuring no infrastructure is changed when violations exist.
         // -------------------------------------------------------------------
         stage('Terraform Apply') {
+            when {
+                expression { currentBuild.currentResult == 'SUCCESS' }
+            }
             steps {
                 dir('terraform') {
                     bat "${env.TF_EXE} apply -auto-approve -input=false tfplan"
@@ -187,33 +241,51 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         }
 
         // -------------------------------------------------------------------
-        // SCENARIO 5 – Advise & Notify.
-        // Deployment succeeded but advisory (MEDIUM/LOW) findings exist.
-        // One Teams message is sent with all warnings so the team can triage
-        // at their own pace.  The build remains GREEN.
-        // Teams uses the MessageCard schema (distinct from Slack's payload).
+        // SCENARIO 5 – Teams notification.
+        // Always runs. Color-codes the card by build result:
+        //   GREEN   = all checks passed, infrastructure deployed
+        //   ORANGE  = violations found, infrastructure NOT changed
+        //   RED     = pipeline error (Terraform or tool failure)
         // -------------------------------------------------------------------
-        stage('Notify Warnings') {
-            when {
-                expression { env.HAS_WARNINGS == 'true' }
-            }
+        stage('Notify Teams') {
             steps {
                 script {
-                    def warningText = readFile('warnings.txt')
+                    def buildResult  = currentBuild.currentResult
+                    def blockingText = fileExists('blocking.txt') ? readFile('blocking.txt').trim() : ''
+                    def warningText  = fileExists('warnings.txt') ? readFile('warnings.txt').trim() : ''
+
+                    def themeColor  = (buildResult == 'SUCCESS')  ? '00CC44' :
+                                      (buildResult == 'UNSTABLE') ? 'FFA500' : 'CC0000'
+                    def statusLabel = (buildResult == 'SUCCESS')  ? 'PASSED — infrastructure deployed' :
+                                      (buildResult == 'UNSTABLE') ? 'UNSTABLE — violations found, no changes applied' :
+                                                                    'FAILED — review pipeline logs'
+
+                    def bodyParts = []
+                    if (blockingText) {
+                        bodyParts << '<b>Blocking Violations (CRITICAL/HIGH):</b><br>' + blockingText.replace('\n', '<br>')
+                    }
+                    if (warningText) {
+                        bodyParts << '<b>Advisory Warnings (MEDIUM/LOW):</b><br>' + warningText.replace('\n', '<br>')
+                    }
+                    if (!bodyParts) {
+                        bodyParts << 'All security checks passed. No findings.'
+                    }
+
                     def payload = groovy.json.JsonOutput.toJson([
-                        "@type"    : "MessageCard",
-                        "@context" : "http://schema.org/extensions",
-                        "themeColor": "FFA500",
-                        "summary"  : "Advisory warnings detected",
-                        "sections" : [[
-                            "activityTitle"   : "⚠️ Advisory warnings — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                            "activitySubtitle": "Deployment succeeded. Non-critical findings require review.",
-                            "activityText"    : warningText.replace('\n', '<br>'),
+                        "@type"     : "MessageCard",
+                        "@context"  : "http://schema.org/extensions",
+                        "themeColor": themeColor,
+                        "summary"   : "${statusLabel} — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        "sections"  : [[
+                            "activityTitle"   : "${statusLabel}",
+                            "activitySubtitle": "${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            "activityText"    : bodyParts.join('<br><br>'),
                             "markdown"        : true
                         ]]
                     ])
                     writeFile file: 'teams_payload.json', text: payload
-                    bat 'curl -s -X POST -H "Content-Type: application/json" -d @teams_payload.json %TEAMS_WEBHOOK_URL%'
+                    bat(returnStatus: true,
+                        script: 'curl -s -X POST -H "Content-Type: application/json" -d @teams_payload.json %TEAMS_WEBHOOK_URL%')
                 }
             }
         }
@@ -221,7 +293,10 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
 
     post {
         success {
-            echo "Pipeline complete — infrastructure is deployed and fully compliant."
+            echo "Pipeline complete — infrastructure deployed and fully compliant."
+        }
+        unstable {
+            echo "Pipeline unstable — security violations found. Infrastructure was NOT changed. Review findings.json and opa_*_result.json artifacts."
         }
         failure {
             echo "Pipeline failed — no infrastructure was changed. Review the failing stage above."
