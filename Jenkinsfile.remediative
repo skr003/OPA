@@ -51,39 +51,11 @@ pipeline {
         // returnStatus: true keeps the stage green so all four always finish.
         // ---------------------------------------------------------------
         stage('Detect All Drift') {
-            parallel {
-
-                // Scenario 1 – Rogue Admin: open SSH/RDP on NSGs
-                stage('NSG Open Ports') {
-                    steps {
-                        bat(returnStatus: true,
-                            script: '"%PYTHON_EXE%" scripts/detect_nsg_drift.py')
-                    }
-                }
-
-                // Scenario 2 – Data Exfiltration: Storage HTTPS disabled
-                stage('Storage HTTPS') {
-                    steps {
-                        bat(returnStatus: true,
-                            script: '"%PYTHON_EXE%" scripts/detect_storage_drift.py')
-                    }
-                }
-
-                // Scenario 3 – Cost Control: VMs scaled outside baseline
-                stage('Resource Scaling') {
-                    steps {
-                        bat(returnStatus: true,
-                            script: '"%PYTHON_EXE%" scripts/detect_scaling_drift.py')
-                    }
-                }
-
-                // Scenario 4 – IAM Tampering: unauthorized high-priv roles
-                stage('IAM Role Assignments') {
-                    steps {
-                        bat(returnStatus: true,
-                            script: '"%PYTHON_EXE%" scripts/detect_iam_drift.py')
-                    }
-                }
+            steps {
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_nsg_drift.py')
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_storage_drift.py')
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_scaling_drift.py')
+                bat(returnStatus: true, script: '"%PYTHON_EXE%" scripts/detect_iam_drift.py')
             }
         }
 
