@@ -29,8 +29,8 @@ pipeline {
                 bat '''
                 @echo off
                 echo [AUTH] Logging in to Azure...
-                call az login --service-principal -u %ARM_CLIENT_ID% -p %ARM_CLIENT_SECRET% --tenant %ARM_TENANT_ID%
-                
+                call az login --service-principal -u "%AZURE_CLIENT_ID%" -p "%AZURE_CLIENT_SECRET%" --tenant "%AZURE_TENANT_ID%"
+
                 echo [QUERY] Identifying storage accounts with Public Access enabled...
                 call az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > outputs/drift_results.json
                 
