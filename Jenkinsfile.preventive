@@ -45,9 +45,10 @@ pipeline {
 
                 stage('Checkov') {
                     steps {
-                        // --soft-fail keeps the exit code 0 so the step never
-                        // fails on its own; evaluation is done in the next stage.
-                        bat "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>nul"
+                        // returnStatus: true prevents the step from failing on non-zero exit.
+                        // --soft-fail handles check failures; returnStatus handles parse/runtime errors.
+                        bat(returnStatus: true,
+                            script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>checkov_error.log")
                     }
                 }
             }
