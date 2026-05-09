@@ -1,53 +1,249 @@
 pipeline {
     agent any
-    //environment {
-    //    AZURE_CREDENTIALS = credentials('AZURE_CLIENT_ID')
-        // Ensure OPA and tfsec are installed on the agent
-    //}
+
+    environment {
+        TFSEC_EXE         = '"C:/Program Files/tfsec/tfsec.exe"'
+        OPA_EXE           = '"C:/Program Files/OPA/opa.exe"'
+        TF_EXE            = '"C:/Program Files/terraform/terraform.exe"'
+        CHECKOV_EXE       = 'checkov'
+        SLACK_WEBHOOK_URL = credentials('SLACK_WEBHOOK_URL')
+
+        // Controls which VM-size allowlist OPA enforces (Scenario 3).
+        // In production, derive this from the branch name or a Jenkins parameter.
+        ENVIRONMENT       = 'dev'
+    }
 
     stages {
+
+        // -------------------------------------------------------------------
+        // SCENARIO 1 – "Perfect PR" entry point.
+        // Every build — compliant or not — starts here.  A fully compliant
+        // commit will travel through every stage without a single failure.
+        // -------------------------------------------------------------------
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
+        // -------------------------------------------------------------------
+        // SCENARIO 2 – Catching Insecure Cloud Defaults.
+        // tfsec and Checkov run in parallel to cut wall-clock time.
+        // Both write JSON results consumed by the next stage.
+        // Neither command fails the build here; severity triage happens next.
+        // -------------------------------------------------------------------
         stage('IaC Static Analysis') {
-            steps {
-                bat 'echo "Running tfsec..."'
-                // Export results to JSON for OPA to read
-                // sh '/usr/local/bin/tfsec . --format json --include-passed > tfsec_results.json'
-                bat '"C:/Program Files/tfsec/tfsec.exe" . --format json --include-passed > tfsec_results.json'
-            }
-        }
+            parallel {
 
-        stage('OPA Policy Check') {
-            steps {
-                bat 'echo "Evaluating against CIS Benchmarks..."'
-                // Evaluate the tfsec JSON output against the Rego policy
-                script {
-                    // Changed 'sh' to 'bat' to execute natively on Windows
-                    def opaResult = bat(script: '"C:/Program Files/OPA/opa.exe" eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.azure.deny" --format pretty', returnStdout: true)
-                    
-                    if (opaResult.contains("CIS_Violation")) {
-                        error "Pipeline Failed: CIS Policy Violations Found! \n ${opaResult}"
-                    } else {
-                        echo "Policy Check Passed: No CIS Violations."
+                stage('tfsec') {
+                    steps {
+                        // Scans terraform/ and tags each finding with an AVD
+                        // rule ID (e.g. AVD-AZU-0012) and severity.
+                        bat "${env.TFSEC_EXE} terraform --format json --include-passed > tfsec_results.json"
+                    }
+                }
+
+                stage('Checkov') {
+                    steps {
+                        // --soft-fail keeps the exit code 0 so the step never
+                        // fails on its own; evaluation is done in the next stage.
+                        bat "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>nul"
                     }
                 }
             }
         }
 
-        stage('Terraform Plan & Apply') {
-            // Only runs if OPA check passes
+        // -------------------------------------------------------------------
+        // SCENARIO 2 (blocking gate) + SCENARIO 5 (advisory collection).
+        //
+        // CRITICAL / HIGH  → added to 'blocking' list → pipeline fails fast
+        //                    with exact filename:line so the developer can
+        //                    locate and fix the vulnerability immediately.
+        //
+        // MEDIUM / LOW     → added to 'warnings' list → persisted to
+        //                    warnings.txt for Slack notification after deploy.
+        // -------------------------------------------------------------------
+        stage('Evaluate Security Findings') {
             steps {
-                dir('policies/scripts/terraform') {
-                    bat '"C:/Program Files/terraform/terraform.exe" init --upgrade'
-                    bat '"C:/Program Files/terraform/terraform.exe" plan -out=tfplan'
-                    // Uncomment below for auto-deploy, or use an input step for manual approval
-                    // sh '"C:/Program Files/terraform/terraform.exe" apply -auto-approve tfplan' 
+                script {
+                    def blocking = []
+                    def warnings = []
+
+                    // ---- tfsec ------------------------------------------------
+                    def tfsecData = new groovy.json.JsonSlurper()
+                                        .parseText(readFile('tfsec_results.json'))
+                    tfsecData.results?.each { r ->
+                        def sev = (r.severity ?: 'UNKNOWN').toUpperCase()
+                        def loc = "${r.location?.filename}:${r.location?.start_line}"
+                        def msg = "[tfsec] ${r.rule_id} | ${sev} | ${r.description} — ${loc}"
+                        if (sev in ['CRITICAL', 'HIGH']) { blocking << msg }
+                        else                             { warnings << msg  }
+                    }
+
+                    // ---- Checkov ----------------------------------------------
+                    def checkovRaw  = readFile('checkov_results.json')
+                    def jsonStart   = checkovRaw.indexOf('{')
+                    if (jsonStart >= 0) {
+                        def checkovData = new groovy.json.JsonSlurper()
+                                              .parseText(checkovRaw.substring(jsonStart))
+                        checkovData.results?.failed_checks?.each { c ->
+                            // Checkov stores severity at check level (v3.x) or
+                            // at result level (older); fall back to MEDIUM.
+                            def sev = (c.severity ?: c.check?.severity ?: 'MEDIUM')
+                                          .toString().toUpperCase()
+                            def loc = "${c.repo_file_path}:${c.file_line_range?.get(0)}"
+                            def msg = "[checkov] ${c.check_id} | ${sev} | ${c.check?.name ?: c.check_id} — ${loc}"
+                            if (sev in ['CRITICAL', 'HIGH']) { blocking << msg }
+                            else                             { warnings << msg  }
+                        }
+                    }
+
+                    // Persist warnings to a file to avoid env-var size limits.
+                    writeFile file: 'warnings.txt', text: warnings.join('\n')
+                    env.HAS_WARNINGS = (warnings.size() > 0).toString()
+
+                    if (blocking) {
+                        error "STATIC ANALYSIS FAILED — ${blocking.size()} blocking violation(s) found:\n\n${blocking.join('\n')}"
+                    }
+                    echo "Static analysis passed. ${warnings.size()} advisory finding(s) noted."
                 }
             }
+        }
+
+        // -------------------------------------------------------------------
+        // Generate the Terraform execution plan and convert it to JSON.
+        // The plan JSON is the authoritative input for the OPA cost and
+        // governance checks below (Scenarios 3 and 4).
+        //
+        // env_config.json carries the current environment name so OPA can
+        // enforce the correct VM-size allowlist.
+        // -------------------------------------------------------------------
+        stage('Terraform Plan') {
+            steps {
+                script {
+                    writeFile file: 'env_config.json',
+                              text: groovy.json.JsonOutput.toJson([
+                                  config: [environment: env.ENVIRONMENT]
+                              ])
+                }
+                dir('terraform') {
+                    bat "${env.TF_EXE} init -upgrade -input=false"
+                    bat "${env.TF_EXE} plan -out=tfplan -input=false"
+                    bat "${env.TF_EXE} show -json tfplan > ../tfplan.json"
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Three OPA checks run in parallel against two different inputs:
+        //
+        //  CIS Compliance  (Scenario 2) — policy-layer re-check on tfsec JSON
+        //  VM Size Policy  (Scenario 3) — cost control on the Terraform plan
+        //  Mandatory Tags  (Scenario 4) — governance check on the plan
+        //
+        // Any single failure blocks the apply; the developer sees exactly
+        // which policy was violated and why.
+        // -------------------------------------------------------------------
+        stage('OPA Policy Checks') {
+            parallel {
+
+                // Scenario 2 — security policy layer (CIS Azure Benchmark)
+                stage('CIS Compliance') {
+                    steps {
+                        script {
+                            def result = bat(
+                                script: """@echo off
+${env.OPA_EXE} eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.azure.deny" --format pretty""",
+                                returnStdout: true
+                            ).trim()
+                            echo "--- CIS Compliance ---\n${result}"
+                            if (result.contains('VIOLATION')) {
+                                error "OPA: CIS Compliance check failed. See violations above."
+                            }
+                        }
+                    }
+                }
+
+                // Scenario 3 — cost governance (VM size per environment)
+                stage('VM Size Policy') {
+                    steps {
+                        script {
+                            def result = bat(
+                                script: """@echo off
+${env.OPA_EXE} eval -i tfplan.json -d policies/vm_size.rego -d env_config.json "data.policy.vm_size.deny" --format pretty""",
+                                returnStdout: true
+                            ).trim()
+                            echo "--- VM Size Policy ---\n${result}"
+                            if (result.contains('VIOLATION')) {
+                                error "OPA: VM Size Policy check failed. See violations above."
+                            }
+                        }
+                    }
+                }
+
+                // Scenario 4 — operational governance (mandatory resource tags)
+                stage('Mandatory Tags') {
+                    steps {
+                        script {
+                            def result = bat(
+                                script: """@echo off
+${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny" --format pretty""",
+                                returnStdout: true
+                            ).trim()
+                            echo "--- Mandatory Tags ---\n${result}"
+                            if (result.contains('VIOLATION')) {
+                                error "OPA: Mandatory Tags check failed. See violations above."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // SCENARIO 1 – "Perfect PR" complete.
+        // All gates passed; reuse the pre-validated plan artifact so no drift
+        // is possible between the check and the apply.
+        // -------------------------------------------------------------------
+        stage('Terraform Apply') {
+            steps {
+                dir('terraform') {
+                    bat "${env.TF_EXE} apply -auto-approve -input=false tfplan"
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // SCENARIO 5 – Advise & Notify.
+        // Deployment succeeded but advisory (MEDIUM/LOW) findings exist.
+        // One Slack message is sent with all warnings so the team can triage
+        // at their own pace.  The build remains GREEN.
+        // -------------------------------------------------------------------
+        stage('Notify Warnings') {
+            when {
+                expression { env.HAS_WARNINGS == 'true' }
+            }
+            steps {
+                script {
+                    def warningText = readFile('warnings.txt')
+                    def payload = groovy.json.JsonOutput.toJson([
+                        text: ":warning: *Advisory warnings — ${env.JOB_NAME} #${env.BUILD_NUMBER}*\n\n" +
+                              "Deployment succeeded. The following non-critical findings were detected " +
+                              "and should be reviewed at your earliest convenience:\n\n${warningText}"
+                    ])
+                    writeFile file: 'slack_payload.json', text: payload
+                    bat 'curl -s -X POST -H "Content-Type: application/json" -d @slack_payload.json %SLACK_WEBHOOK_URL%'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline complete — infrastructure is deployed and fully compliant."
+        }
+        failure {
+            echo "Pipeline failed — no infrastructure was changed. Review the failing stage above."
         }
     }
 }

@@ -2,11 +2,11 @@ pipeline {
     agent any
 
     environment {
-        ARM_SUBSCRIPTION_ID = "your-subscription-id"
-        AZURE_CLIENT_ID = credentials('AZURE_CLIENT_ID')
+        ARM_SUBSCRIPTION_ID = credentials('AZURE_SUBSCRIPTION_ID')
+        AZURE_CLIENT_ID     = credentials('AZURE_CLIENT_ID')
         AZURE_CLIENT_SECRET = credentials('AZURE_CLIENT_SECRET')
-        AZURE_TENANT_ID = credentials('AZURE_TENANT_ID')
-        
+        AZURE_TENANT_ID     = credentials('AZURE_TENANT_ID')
+
         // Path to your Python executable
         PYTHON_EXE = "C:/Users/admin/AppData/Local/Programs/Python/Python312/python.exe"
     }
@@ -25,7 +25,7 @@ pipeline {
 
         stage('Detect Infrastructure Drift') {
             steps {
-                echo "Querying Azure Resource Graph for CIS 3.1 Violations..."
+                echo "Querying Azure Resource Graph for CIS 3.6 Violations..."
                 bat '''
                 @echo off
                 echo [AUTH] Logging in to Azure...
@@ -33,7 +33,7 @@ pipeline {
 
                 echo [QUERY] Identifying storage accounts with Public Access enabled...
                 call az graph query -q "Resources | where type =~ 'Microsoft.Storage/storageAccounts' | where properties.allowBlobPublicAccess == true | project id, name, resourceGroup" --output json > outputs/drift_results.json
-                
+
                 echo ---------------------------------------------------
                 echo RAW DRIFT DATA DETECTED:
                 echo ---------------------------------------------------
@@ -46,7 +46,6 @@ pipeline {
         stage('CIS Benchmark Mapping') {
             steps {
                 echo "Running Python Mapper to generate Windows remediation script..."
-                // Runs the mapper script which reads from outputs/drift_results.json
                 bat '"%PYTHON_EXE%" scripts/cis_mapper.py'
             }
         }
@@ -54,15 +53,13 @@ pipeline {
         stage('Remediate & Notify') {
             steps {
                 script {
-                    // Check if the Python script generated a fix file in the outputs folder
                     if (fileExists('outputs/remediate_drift.bat')) {
                         echo "DRIFT DETECTED: Executing automated remediation..."
-                        
+
                         echo "--- PREVIEW OF REMEDIATION COMMANDS ---"
                         bat 'type outputs\\remediate_drift.bat'
                         echo "---------------------------------------"
-                        
-                        // Execute the fix
+
                         bat 'call outputs\\remediate_drift.bat'
                     } else {
                         echo "COMPLIANCE VERIFIED: No drifting resources found. No remediation needed."

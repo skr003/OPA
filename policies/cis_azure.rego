@@ -8,24 +8,22 @@ import future.keywords.if
 # Add the names of resources allowed to break the rules here.
 # -----------------------------------------------------------------------------
 exception_list := {
-    "azurerm_storage_account.public_website_assets", 
+    "azurerm_storage_account.public_website_assets",
     "azurerm_storage_account.legacy_app_data"
 }
 
 # Helper to check if a resource is on the exception list
-# FIX: Added 'if' keyword here
 is_exempt(resource_name) if {
-    # Check if the resource name exists in the set
     exception_list[resource_name]
 }
 
 # -----------------------------------------------------------------------------
 # RULE 1: Ensure 'Secure Transfer Required' is Enabled (HTTPS)
-# CIS Benchmark 3.1 / tfsec: AZU010
+# CIS Benchmark 3.1 / tfsec: AVD-AZU-0010
 # -----------------------------------------------------------------------------
 deny contains msg if {
     result := input.results[_]
-    result.rule_id == "AZU010"
+    result.rule_id == "AVD-AZU-0010"
     not is_exempt(result.resource)
 
     msg := sprintf("CIS 3.1 VIOLATION: Secure transfer (HTTPS) is disabled on '%s'.", [result.resource])
@@ -33,11 +31,11 @@ deny contains msg if {
 
 # -----------------------------------------------------------------------------
 # RULE 2: Ensure 'Allow Blob Public Access' is Disabled
-# CIS Benchmark 3.6 / tfsec: AZU012
+# CIS Benchmark 3.6 / tfsec: AVD-AZU-0012
 # -----------------------------------------------------------------------------
 deny contains msg if {
     result := input.results[_]
-    result.rule_id == "AZU012"
+    result.rule_id == "AVD-AZU-0012"
     not is_exempt(result.resource)
 
     msg := sprintf("CIS 3.6 VIOLATION: Public blob access is enabled on '%s'.", [result.resource])
@@ -45,11 +43,11 @@ deny contains msg if {
 
 # -----------------------------------------------------------------------------
 # RULE 3: Ensure Default Network Access Rule is 'Deny'
-# CIS Benchmark 3.7 / tfsec: AZU011
+# CIS Benchmark 3.7 / tfsec: AVD-AZU-0011
 # -----------------------------------------------------------------------------
 deny contains msg if {
     result := input.results[_]
-    result.rule_id == "AZU011"
+    result.rule_id == "AVD-AZU-0011"
     not is_exempt(result.resource)
 
     msg := sprintf("CIS 3.7 VIOLATION: Storage account '%s' does not deny network traffic by default.", [result.resource])
@@ -57,11 +55,11 @@ deny contains msg if {
 
 # -----------------------------------------------------------------------------
 # RULE 4: Ensure Minimum TLS Version is set to 1.2
-# CIS Benchmark 3.10 / tfsec: AZU013
+# CIS Benchmark 3.10 / tfsec: AVD-AZU-0013
 # -----------------------------------------------------------------------------
 deny contains msg if {
     result := input.results[_]
-    result.rule_id == "AZU013"
+    result.rule_id == "AVD-AZU-0013"
     not is_exempt(result.resource)
 
     msg := sprintf("CIS 3.10 VIOLATION: TLS version is outdated on '%s'. Must be 1.2.", [result.resource])
@@ -69,11 +67,11 @@ deny contains msg if {
 
 # -----------------------------------------------------------------------------
 # RULE 5: Ensure 'Infrastructure Encryption' is Enabled
-# CIS Benchmark 3.2 / tfsec: AZU014
+# CIS Benchmark 3.2 / tfsec: AVD-AZU-0014
 # -----------------------------------------------------------------------------
 deny contains msg if {
     result := input.results[_]
-    result.rule_id == "AZU014"
+    result.rule_id == "AVD-AZU-0014"
     not is_exempt(result.resource)
 
     msg := sprintf("CIS 3.2 VIOLATION: Infrastructure encryption is disabled on '%s'.", [result.resource])
