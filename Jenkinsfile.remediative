@@ -39,7 +39,7 @@ pipeline {
                     -u "%AZURE_CLIENT_ID%" ^
                     -p "%AZURE_CLIENT_SECRET%" ^
                     --tenant "%AZURE_TENANT_ID%"
-                call az account set --subscription "%ARM_SUBSCRIPTION_ID%"
+                call az account set --subscription "%AZURE_SUBSCRIPTION_ID%"
                 echo [Auth] Login successful.
                 '''
             }
