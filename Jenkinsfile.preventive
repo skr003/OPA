@@ -213,12 +213,23 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         }
 
         // -------------------------------------------------------------------
-        // Archive all JSON result files as build artifacts so they are
-        // accessible from the Jenkins build page regardless of build outcome.
+        // Consolidate all tool outputs into a single human-readable report.
+        // security_report.json has one row per check with:
+        //   tool | check_id | severity | input | status | reason
+        // -------------------------------------------------------------------
+        stage('Generate Security Report') {
+            steps {
+                bat(returnStatus: true, script: 'python generate_report.py')
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Archive every JSON artifact so they appear on the Jenkins build
+        // page regardless of build outcome.
         // -------------------------------------------------------------------
         stage('Archive Security Report') {
             steps {
-                archiveArtifacts artifacts: 'findings.json, tfsec_results.json, checkov_results.json, opa_cis_result.json, opa_vm_result.json, opa_tags_result.json',
+                archiveArtifacts artifacts: 'security_report.json, findings.json, tfsec_results.json, checkov_results.json, opa_cis_result.json, opa_vm_result.json, opa_tags_result.json',
                                  allowEmptyArchive: true
             }
         }
