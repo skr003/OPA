@@ -18,21 +18,25 @@ def run_az(cmd):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 def main():
-    print("[IAM] Querying activity log for recent role assignment changes...")
-
-    # Look for roleAssignment write events in the last 24 hours
-    start_time = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    raw = run_az(
-        f'az monitor activity-log list'
-        f' --start-time "{start_time}"'
-        f' --query "[?authorization.action == \'Microsoft.Authorization/roleAssignments/write\']"'
-        f' --output json'
-    )
-    events = raw if isinstance(raw, list) else []
-
-    # Also query current high-priv assignments at subscription scope
-    assignments_raw = run_az('az role assignment list --all --include-inherited --output json')
-    assignments = assignments_raw if isinstance(assignments_raw, list) else []
+    raw_path = os.path.join(OUTPUTS, "iam_raw.json")
+    if os.path.exists(raw_path):
+        print("[IAM] Reading pre-queried data from iam_raw.json...")
+        with open(raw_path) as f:
+            iam_raw = json.load(f)
+        events      = iam_raw.get("activity", [])
+        assignments = iam_raw.get("assignments", [])
+    else:
+        print("[IAM] Querying activity log for recent role assignment changes...")
+        start_time = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        raw = run_az(
+            f'az monitor activity-log list'
+            f' --start-time "{start_time}"'
+            f' --query "[?authorization.action == \'Microsoft.Authorization/roleAssignments/write\']"'
+            f' --output json'
+        )
+        events = raw if isinstance(raw, list) else []
+        assignments_raw = run_az('az role assignment list --all --include-inherited --output json')
+        assignments = assignments_raw if isinstance(assignments_raw, list) else []
 
     drifted = []
     for a in assignments:

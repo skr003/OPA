@@ -18,7 +18,18 @@ Developer pushes Terraform code
            │
            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Stage 2: IaC Static Analysis  [SCENARIO 2]                 │
+│  Stage 2: Terraform Init & Validate                          │
+│                                                             │
+│  terraform init -upgrade -input=false                       │
+│  terraform validate                                         │
+│                                                             │
+│  Wrapped in catchError — build marked UNSTABLE if provider  │
+│  download fails; all subsequent stages still execute.       │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Stage 3: Layer A — Static Analysis  [SCENARIO 2]           │
 │  tfsec and Checkov run in PARALLEL                          │
 │                                                             │
 │  ┌──────────────────────────┐  ┌──────────────────────────┐ │
@@ -31,27 +42,29 @@ Developer pushes Terraform code
                                           │
                                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 3: Evaluate Security Findings  [SCENARIOS 2 + 5]             │
+│  Stage 4: Evaluate Security Findings  [SCENARIO 2]                   │
 │                                                                     │
-│  Parse tfsec_results.json + checkov_results.json                    │
+│  python parse_findings.py                                           │
+│  Reads: tfsec_results.json + checkov_results.json                   │
+│  Writes: findings.json, blocking.txt, warnings.txt                  │
 │                                                                     │
-│    CRITICAL / HIGH  ──→  blocking[]     MEDIUM / LOW  ──→  warnings[] │
+│    CRITICAL / HIGH  ──→  blocking[]     MEDIUM / LOW  ──→  warnings[]│
 │                                                                     │
-│  Writes warnings.txt (consumed by Teams notification in Stage 7)    │
 └──────────┬────────────────────────────────────────┬────────────────┘
            │  blocking = []                         │  blocking has entries
            │                                        ▼
            │                         ┌──────────────────────────────┐
-           │                         │  PIPELINE FAILS [SCENARIO 2] │
+           │                         │  BUILD MARKED UNSTABLE       │
+           │                         │  [SCENARIO 2]                │
            │                         │                              │
            │                         │  rule ID | severity          │
            │                         │  description                 │
            │                         │  filename : line number      │
-           │                         │  Deployment blocked.         │
+           │                         │  Terraform Apply blocked.    │
            │                         └──────────────────────────────┘
            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Stage 4: Terraform Plan                                    │
+│  Stage 5: Terraform Plan                                    │
 │                                                             │
 │  Writes env_config.json:                                    │
 │    {"config": {"environment": "dev|staging|prod"}}          │
@@ -61,75 +74,274 @@ Developer pushes Terraform code
 │  terraform show -json tfplan > tfplan.json                  │
 │                                                             │
 │  tfplan.json is the input for the OPA cost + tags checks    │
+│  Wrapped in catchError — OPA runs even if Azure creds absent│
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 5: OPA Policy Checks  [SCENARIOS 2, 3, 4]                    │
-│  Three checks run in PARALLEL                                       │
+│  Stage 6: Layer B — OPA Policy Validation  [SCENARIOS 3, 4]          │
+│  Two checks run in PARALLEL                                         │
 │                                                                     │
-│  ┌───────────────────────┐ ┌────────────────────────┐ ┌──────────┐  │
-│  │ CIS Compliance        │ │ VM Size Policy         │ │ Mandatory│  │
-│  │ [Scenario 2]          │ │ [Scenario 3]           │ │ Tags     │  │
-│  │                       │ │                        │ │ [Scen. 4]│  │
-│  │ -i tfsec_results.json │ │ -i tfplan.json         │ │          │  │
-│  │ -d cis_azure.rego     │ │ -d vm_size.rego        │ │ -i tfplan│  │
-│  │                       │ │ -d env_config.json     │ │   .json  │  │
-│  │ data.cis.azure.deny   │ │                        │ │ -d tags  │  │
-│  │                       │ │ data.policy.vm_size    │ │   .rego  │  │
-│  │ Checks AVD rule IDs   │ │   .deny                │ │          │  │
-│  │ against exception     │ │                        │ │ data     │  │
-│  │ list; 5 CIS rules     │ │ Checks VM size vs      │ │ .policy  │  │
-│  └──────────┬────────────┘ │ per-env allowlist      │ │ .tags    │  │
-│             │              └──────────┬─────────────┘ │ .deny    │  │
-│             │                         │               └─────┬────┘  │
-└─────────────┼─────────────────────────┼─────────────────────┼───────┘
-              │  any deny set           │                     │
-              │  contains "VIOLATION"   │                     │
-              ▼                         ▼                     ▼
-   ┌──────────────────┐  ┌──────────────────────┐  ┌────────────────────┐
-   │ OPA CIS FAIL     │  │ OPA COST FAIL        │  │ OPA TAGS FAIL      │
-   │ [Scenario 2]     │  │ [Scenario 3]         │  │ [Scenario 4]       │
-   │                  │  │                      │  │                    │
-   │ Security policy  │  │ VM size not on       │  │ Missing mandatory  │
-   │ violation.       │  │ allowed list for     │  │ tag: Environment,  │
-   │ Deployment       │  │ this environment.    │  │ CostCenter, or     │
-   │ blocked.         │  │ Deployment blocked.  │  │ ManagedBy.         │
-   └──────────────────┘  └──────────────────────┘  └────────────────────┘
+│  ┌────────────────────────────────┐  ┌────────────────────────────┐  │
+│  │ VM Size Policy [Scenario 3]    │  │ Mandatory Tags [Scenario 4]│  │
+│  │                                │  │                            │  │
+│  │ -i tfplan.json                 │  │ -i tfplan.json             │  │
+│  │ -d policies/vm_size.rego       │  │ -d policies/tags.rego      │  │
+│  │ -d env_config.json             │  │                            │  │
+│  │                                │  │ data.policy.tags.deny      │  │
+│  │ data.policy.vm_size.deny       │  │                            │  │
+│  │                                │  │ Checks Environment,        │  │
+│  │ Checks VM size vs              │  │ CostCenter, ManagedBy      │  │
+│  │ per-env allowlist              │  │ on all taggable resources  │  │
+│  └──────────────┬─────────────────┘  └────────────────┬───────────┘  │
+└─────────────────┼──────────────────────────────────────┼─────────────┘
+                  │  any deny set contains "VIOLATION"   │
+                  ▼                                      ▼
+   ┌──────────────────────────────┐  ┌────────────────────────────────┐
+   │ OPA COST FAIL [Scenario 3]   │  │ OPA TAGS FAIL [Scenario 4]     │
+   │                              │  │                                │
+   │ VM size not on allowed list  │  │ Missing mandatory tag:         │
+   │ for this environment.        │  │ Environment, CostCenter, or    │
+   │ Deployment blocked.          │  │ ManagedBy. Deployment blocked. │
+   └──────────────────────────────┘  └────────────────────────────────┘
 
            │  all deny sets empty
            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Stage 6: Terraform Apply  [SCENARIO 1 complete]            │
+│  Stage 7: Generate Security Report                          │
 │                                                             │
+│  python generate_report.py                                  │
+│  Consolidates all tool outputs into security_report.json    │
+│  One row per check: tool, check_id, severity, status, reason│
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Stage 8: Archive Security Report                           │
+│                                                             │
+│  archiveArtifacts:                                          │
+│    security_report.json  findings.json                      │
+│    tfsec_results.json    checkov_results.json               │
+│    opa_vm_result.json    opa_tags_result.json               │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Stage 9: Terraform Apply  [SCENARIO 1 complete]            │
+│                                                             │
+│  when { currentBuild.currentResult == 'SUCCESS' }           │
 │  terraform apply -auto-approve tfplan                       │
 │                                                             │
 │  Reuses the pre-validated plan — no drift possible          │
 │  between the policy check and the apply.                    │
+│  Skipped automatically if any unstable() was called above.  │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 7: Notify Warnings  [SCENARIO 5]                             │
-│  (runs only when HAS_WARNINGS = true)                               │
+│  Stage 10: Notify Teams  [SCENARIO 5]                               │
+│  Always runs regardless of build result.                            │
 │                                                                     │
-│  Reads warnings.txt → builds Teams MessageCard payload              │
-│  curl POST → SLACK_WEBHOOK_URL                                      │
+│  Reads blocking.txt + warnings.txt → builds Teams MessageCard       │
+│  curl POST → TEAMS_WEBHOOK_URL                                      │
 │                                                                     │
-│  Build stays GREEN. Team triages at their own pace.                 │
+│  GREEN  (SUCCESS)  = all checks passed, infrastructure deployed     │
+│  ORANGE (UNSTABLE) = violations found, infrastructure NOT changed   │
+│  RED    (FAILURE)  = pipeline error                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Severity Routing (Stage 3)
+### Severity Routing (Stage 4)
 
 | Severity | Source | Outcome |
 |----------|--------|---------|
-| CRITICAL | tfsec or Checkov | Blocks pipeline — `rule_id \| description \| file:line` printed |
-| HIGH | tfsec or Checkov | Blocks pipeline — `rule_id \| description \| file:line` printed |
+| CRITICAL | tfsec or Checkov | Marks build UNSTABLE — `rule_id \| description \| file:line` printed, Terraform Apply skipped |
+| HIGH | tfsec or Checkov | Marks build UNSTABLE — `rule_id \| description \| file:line` printed, Terraform Apply skipped |
 | MEDIUM | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Teams advisory |
 | LOW | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Teams advisory |
 
-### CIS Rule Evaluation (Stage 5 — CIS Compliance check)
+### OPA VM Size Allowlist (Stage 6 — VM Size Policy)
+
+| Environment | Permitted sizes |
+|-------------|----------------|
+| `dev` | B1s, B2s, B2ms, B4ms, D2s_v3, D4s_v3 |
+| `staging` | B2s, B4ms, D2s_v3, D4s_v3, D8s_v3 |
+| `prod` | D2–D16s_v3, E4–E16s_v3 |
+
+> **Note:** CIS Azure Benchmark checks (`policies/cis_azure.rego`) run in the **Remediative Pipeline** against a fresh tfsec scan of the live IaC checkout — not in the Preventive Pipeline's Layer B.
+
+---
+
+## Pipeline 2 — Remediative Controls
+
+**Trigger:** Scheduled (cron) or manual build  
+**Goal:** Query live Azure resources, detect drift from CIS baseline, auto-fix safe violations, and alert on risky ones
+
+```
+Scheduled / Manual Trigger
+          │
+          ▼
+┌──────────────────────────────────────────────┐
+│  Stage 1: Checkout Code                      │
+│                                              │
+│  checkout scm                                │
+│  mkdir outputs\  (if not exists)             │
+│  del /f /q outputs\*.json                    │
+│  del /f /q outputs\*.bat                     │
+│  → clean workspace ready for this run        │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────────────────┐
+│  Stage 2: Environment Setup                                  │
+│                                                              │
+│  az login --service-principal                                │
+│     -u %AZURE_CLIENT_ID%                                     │
+│     -p %AZURE_CLIENT_SECRET%                                 │
+│     --tenant %AZURE_TENANT_ID%                               │
+│  az account set --subscription %ARM_SUBSCRIPTION_ID%         │
+│  az account show  (verify active subscription)               │
+└──────────────────┬───────────────────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Stage 3: Query Azure Resource Graph                                 │
+│                                                                      │
+│  python scripts/query_azure.py                                       │
+│  Fires all 4 ARG queries in parallel and saves raw results:          │
+│                                                                      │
+│  ┌──────────────────────┐  ┌──────────────────────────┐              │
+│  │ NSG inbound rules    │  │ Storage accounts          │              │
+│  │ → outputs/           │  │ (HTTPS + public blob)     │              │
+│  │   nsg_raw.json       │  │ → outputs/                │              │
+│  └──────────────────────┘  │   storage_raw.json        │              │
+│  ┌──────────────────────┐  └──────────────────────────┘              │
+│  │ VM hardware profiles │  ┌──────────────────────────┐              │
+│  │ → outputs/           │  │ IAM role assignments      │              │
+│  │   scaling_raw.json   │  │ + activity log (24 h)     │              │
+│  └──────────────────────┘  │ → outputs/iam_raw.json   │              │
+│                             └──────────────────────────┘              │
+│  Archives: outputs/*_raw.json                                        │
+└──────────────────────────────────────┬───────────────────────────────┘
+                                       │
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Stage 4: Execute Python Audit Engine (CIS Mapping)                  │
+│                                                                      │
+│  -- Scenario 1-4 drift detection --                                  │
+│  python detect_nsg_drift.py                                          │
+│    Reads: nsg_raw.json   CIS 6.1/6.2 (open SSH/RDP to internet)     │
+│    Writes: outputs/nsg_drift.json + outputs/nsg_remediate.bat        │
+│                                                                      │
+│  python detect_storage_drift.py                                      │
+│    Reads: storage_raw.json   CIS 3.15/3.5 (HTTPS-only, public blob) │
+│    Writes: outputs/storage_drift.json + outputs/storage_remediate.bat│
+│                                                                      │
+│  python detect_scaling_drift.py                                      │
+│    Reads: scaling_raw.json   Cost Governance (VM vs IaC baseline)    │
+│    Writes: outputs/scaling_drift.json + outputs/scaling_remediate.bat│
+│                                                                      │
+│  python detect_iam_drift.py                                          │
+│    Reads: iam_raw.json   CIS 1.1 (unauthorized high-priv roles)      │
+│    Writes: outputs/iam_drift.json + outputs/iam_remediate.bat        │
+│                                                                      │
+│  -- CIS Azure Benchmark (IaC + live infra) --                        │
+│  tfsec terraform --format json --include-passed                      │
+│    > outputs/tfsec_scan.json                                         │
+│  opa eval -i outputs/tfsec_scan.json -d policies/cis_azure.rego      │
+│    "data.cis.azure.deny" → outputs/opa_cis_result.json               │
+│  (build marked UNSTABLE if violations found)                         │
+│                                                                      │
+│  -- Pre-Remediation Compliance Dashboard --                          │
+│  python scripts/generate_dashboard.py pre_remediation                │
+│    → outputs/compliance_dashboard_pre_remediation.json               │
+│    → outputs/compliance_dashboard_latest.json                        │
+│                                                                      │
+│  Console prints per-scenario DRIFTED / COMPLIANT summary             │
+│  Archives: outputs/*_drift.json + compliance_dashboard_pre_*.json    │
+└──────────────────────────────────────┬───────────────────────────────┘
+                                       │
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Stage 5: Generate Remediation Scripts                               │
+│                                                                      │
+│  Prints preview of each .bat file to Jenkins console:                │
+│    nsg_remediate.bat     — Scenario 1: set NSG rule to Deny          │
+│    storage_remediate.bat — Scenario 2: HTTPS-only + public blob off  │
+│    scaling_remediate.bat — Scenario 3: deallocate, resize, start     │
+│    iam_remediate.bat     — Scenario 4: az role assignment delete     │
+│                                                                      │
+│  (Script printed only if drift was detected; otherwise logged as     │
+│   "no drift detected, script not generated".)                        │
+│  Archives: outputs/*.bat + outputs/*.json                            │
+└──────────────────────────────────────┬───────────────────────────────┘
+                                       │
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Stage 6: Trigger Self-Healing & Alerts                              │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ SCENARIO 1 — NSG Open Ports (CIS 6.1/6.2)                    │    │
+│  │ nsg_drift.json → drifted=true?                               │    │
+│  │   YES → print nsg_remediate.bat preview                      │    │
+│  │         call outputs\nsg_remediate.bat  (AUTO-FIX)           │    │
+│  │         az network nsg rule update --access Deny             │    │
+│  │   NO  → "NSG: COMPLIANT — no open ports found."              │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ SCENARIO 2 — Storage HTTPS Drift (CIS 3.15/3.5)              │    │
+│  │ storage_drift.json → drifted=true?                           │    │
+│  │   YES → print storage_drift.json                             │    │
+│  │         Jenkins input() — 30 min approval gate               │    │
+│  │         APPROVED  → call outputs\storage_remediate.bat       │    │
+│  │         TIMEOUT   → drift logged, persists until next run    │    │
+│  │   NO  → "Storage: COMPLIANT — all accounts use HTTPS-only."  │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ SCENARIO 3 — VM Scaling (Cost Governance)                    │    │
+│  │ scaling_drift.json → drifted=true?                           │    │
+│  │   YES → print scaling_drift.json                             │    │
+│  │         unstable("Cost drift: DevOps review required")       │    │
+│  │         Revert script at outputs/scaling_remediate.bat ready │    │
+│  │   NO  → "Scaling: COMPLIANT — all VMs within approved sizes."│    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ SCENARIO 4 — IAM Privilege Escalation (CIS 1.1)              │    │
+│  │ iam_drift.json → drifted=true?                               │    │
+│  │   YES → print iam_drift.json                                 │    │
+│  │         unstable("IAM escalation: security team alerted")    │    │
+│  │         Removal script at outputs/iam_remediate.bat ready    │    │
+│  │   NO  → "IAM: COMPLIANT — no unauthorized assignments found."│    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  -- Post-Remediation Verification --                                 │
+│  Re-run all 4 detect_*.py scripts against live Azure                 │
+│  python generate_dashboard.py post_remediation                       │
+│    → outputs/compliance_dashboard_post_remediation.json              │
+│  Archives: compliance_dashboard_post_remediation.json                │
+│                                                                      │
+│  -- Scenario 5: Teams Notification --                                │
+│  Builds MessageCard with all 4 scenario outcomes                     │
+│  curl POST → TEAMS_WEBHOOK_URL                                       │
+│  GREEN  (SUCCESS)  = all drift remediated                            │
+│  ORANGE (UNSTABLE) = partial remediation, manual review required     │
+│  RED    (FAILURE)  = pipeline error                                  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Remediation Decision Matrix
+
+| Scenario | CIS Control | Drift Detected | Action | Build Result |
+|----------|------------|---------------|--------|--------------|
+| 1 — NSG open ports | 6.1 / 6.2 | Port 22/3389 open to internet | Auto-fix: set rule to Deny | SUCCESS |
+| 2 — Storage HTTPS | 3.15 / 3.5 | HTTPS-only off or public blob on | Manual approval gate (30 min timeout) | SUCCESS if approved |
+| 3 — VM scaling | Cost Gov. | VM size outside IaC baseline | Notify DevOps, revert script generated | UNSTABLE |
+| 4 — IAM tampering | 1.1 | Unauthorized Owner/Contributor at sub scope | Alert security team, removal script generated | UNSTABLE |
+
+### CIS Rule Evaluation (cis_azure.rego — Stage 4 of Remediative Pipeline)
 
 Each tfsec result is evaluated against five rules in `policies/cis_azure.rego`:
 
@@ -141,102 +353,34 @@ Each tfsec result is evaluated against five rules in `policies/cis_azure.rego`:
 | AVD-AZU-0013 | 3.10 | "CIS 3.10 VIOLATION: TLS version is outdated on '{resource}'. Must be 1.2" |
 | AVD-AZU-0014 | 3.2 | "CIS 3.2 VIOLATION: Infrastructure encryption is disabled on '{resource}'" |
 
----
-
-## Pipeline 2 — Remediative Controls
-
-**Trigger:** Scheduled (cron) or manual build  
-**Goal:** Find live Azure resources that have drifted from CIS compliance and auto-fix them
-
-```
-Scheduled / Manual Trigger
-          │
-          ▼
-┌──────────────────────────────────────────────┐
-│  Stage 1: Initialize Workspace               │
-│                                              │
-│  mkdir outputs\   (if not exists)            │
-│  Delete any previous drift_results.json      │
-│  Delete any previous remediate_drift.bat     │
-└──────────────────┬───────────────────────────┘
-                   │
-                   ▼
-┌──────────────────────────────────────────────────────────────┐
-│  Stage 2: Detect Infrastructure Drift                        │
-│                                                              │
-│  az login --service-principal                                │
-│     -u %AZURE_CLIENT_ID%                                     │
-│     -p %AZURE_CLIENT_SECRET%                                 │
-│     --tenant %AZURE_TENANT_ID%                               │
-│                                                              │
-│  az graph query -q "                                         │
-│    Resources                                                 │
-│    | where type =~ 'Microsoft.Storage/storageAccounts'       │
-│    | where properties.allowBlobPublicAccess == true          │
-│    | project id, name, resourceGroup"                        │
-│  > outputs/drift_results.json                                │
-│                                                              │
-│  Targets CIS 3.6 — public blob access violation              │
-└──────────────────┬──────────────────┬───────────────────────┘
-                   │                  │
-           No results          Results found
-                   │                  │
-                   ▼                  ▼
-     ┌──────────────────────┐  ┌──────────────────────────────────┐
-     │  Stage 3: Mapping    │  │  Stage 3: CIS Benchmark Mapping  │
-     │                      │  │                                  │
-     │  python cis_mapper   │  │  python cis_mapper.py            │
-     │  No resources found  │  │                                  │
-     │  → NO .bat written   │  │  Reads: drift_results.json       │
-     └──────────┬───────────┘  │  For each non-compliant resource:│
-                │               │    az storage account update     │
-                ▼               │      --name {name}               │
-     ┌──────────────────────┐   │      --resource-group {rg}       │
-     │  Stage 4:            │   │      --allow-blob-public-access  │
-     │  fileExists(.bat)?   │   │        false                     │
-     │       → NO           │   │  Writes: remediate_drift.bat     │
-     │                      │   └──────────────────┬───────────────┘
-     │  "COMPLIANCE         │                      │
-     │   VERIFIED"          │                      ▼
-     │  No action taken     │   ┌──────────────────────────────────┐
-     └──────────────────────┘   │  Stage 4: Remediate & Notify     │
-                                │                                  │
-                                │  fileExists(.bat)? → YES         │
-                                │  Execute remediate_drift.bat     │
-                                │  (one az CLI call per resource)  │
-                                │                                  │
-                                │  Each call sets:                 │
-                                │  allowBlobPublicAccess = false   │
-                                └──────────────────┬───────────────┘
-                                                   │
-                                                   ▼
-                                ┌──────────────────────────────────┐
-                                │  Post: Confirm Compliance        │
-                                │  Log remediation summary         │
-                                └──────────────────────────────────┘
-```
-
 ### Data Flow (Remediative Pipeline)
 
 ```
-Azure Resource Graph
+Azure Resource Graph (4 parallel ARG queries)
         │
-        │  JSON (resource list)
+        │  raw JSON (resource snapshots)
         ▼
-outputs/drift_results.json
+outputs/nsg_raw.json       outputs/storage_raw.json
+outputs/scaling_raw.json   outputs/iam_raw.json
         │
-        │  read by
+        │  read by detect_*.py scripts
         ▼
-scripts/cis_mapper.py
+outputs/nsg_drift.json      → outputs/nsg_remediate.bat
+outputs/storage_drift.json  → outputs/storage_remediate.bat
+outputs/scaling_drift.json  → outputs/scaling_remediate.bat
+outputs/iam_drift.json      → outputs/iam_remediate.bat
         │
-        │  generates (only when drift found)
+        │  aggregated by generate_dashboard.py
         ▼
-outputs/remediate_drift.bat
+outputs/compliance_dashboard_pre_remediation.json
         │
-        │  executed by Jenkins
+        │  scenario actions: auto-fix / approval gate / alert
         ▼
-Azure Storage Account(s)
-  allowBlobPublicAccess = false
+outputs/compliance_dashboard_post_remediation.json
+        │
+        │  Teams notification (before/after compliance scores)
+        ▼
+TEAMS_WEBHOOK_URL
 ```
 
 ---
@@ -251,12 +395,12 @@ Azure Storage Account(s)
                     ┌─────────────▼────────────────────────────┐
                     │  Preventive Pipeline                      │
                     │  tfsec + Checkov → severity gate          │
-                    │  Terraform plan → OPA (CIS, cost, tags)   │
+                    │  Terraform plan → OPA (cost, tags)        │
                     └──────┬─────────────────────┬─────────────┘
-                    Passes │                     │ Fails
+                    Passes │                     │ Fails (UNSTABLE)
                            │                     │
               ┌────────────▼──┐       ┌──────────▼─────────────┐
-              │  Terraform    │       │  Block deployment       │
+              │  Terraform    │       │  Deployment blocked     │
               │  Apply +      │       │  Scenario 2: security  │
               │  Teams notify │       │  Scenario 3: VM cost   │
               │  if warnings  │       │  Scenario 4: tags      │
@@ -269,12 +413,22 @@ Azure Storage Account(s)
               │   may re-introduce violations)         │
               └────────┬──────────────────────────────┘
                        │
-              ┌────────▼──────────────────────────────┐
-              │  Remediative Pipeline (scheduled)      │
-              │  Azure Resource Graph → detect drift   │
-              │  cis_mapper.py → generate fix          │
-              │  az CLI → apply fix                    │
-              └────────────────────────────────────────┘
+              ┌────────▼──────────────────────────────────────────────┐
+              │  Remediative Pipeline (scheduled / manual)             │
+              │                                                        │
+              │  query_azure.py → 4 raw ARG snapshots                 │
+              │  detect_*.py   → 4 drift reports + remediation scripts │
+              │  tfsec + OPA   → CIS Benchmark check                  │
+              │  generate_dashboard.py → pre-remediation compliance %  │
+              │                                                        │
+              │  Scenario 1 (NSG)     → AUTO-FIX applied              │
+              │  Scenario 2 (Storage) → MANUAL APPROVAL GATE          │
+              │  Scenario 3 (Scaling) → ALERT DEVOPS (UNSTABLE)       │
+              │  Scenario 4 (IAM)     → ALERT SECURITY (UNSTABLE)     │
+              │                                                        │
+              │  generate_dashboard.py → post-remediation compliance % │
+              │  Teams card with before/after compliance scores        │
+              └────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -283,15 +437,16 @@ Azure Storage Account(s)
 
 | Stage | Pipeline | Files Read | Files Written |
 |-------|----------|------------|---------------|
-| IaC Static Analysis | Preventive | `terraform/*.tf` | `tfsec_results.json`, `checkov_results.json` |
-| Evaluate Findings | Preventive | `tfsec_results.json`, `checkov_results.json` | `warnings.txt` |
+| Layer A — Static Analysis | Preventive | `terraform/*.tf` | `tfsec_results.json`, `checkov_results.json` |
+| Evaluate Findings | Preventive | `tfsec_results.json`, `checkov_results.json` | `findings.json`, `blocking.txt`, `warnings.txt` |
 | Terraform Plan | Preventive | `terraform/*.tf` | `env_config.json`, `tfplan.json` |
-| OPA — CIS | Preventive | `tfsec_results.json`, `policies/cis_azure.rego` | — |
-| OPA — VM Size | Preventive | `tfplan.json`, `policies/vm_size.rego`, `env_config.json` | — |
-| OPA — Tags | Preventive | `tfplan.json`, `policies/tags.rego` | — |
+| OPA — VM Size | Preventive | `tfplan.json`, `policies/vm_size.rego`, `env_config.json` | `opa_vm_result.json` |
+| OPA — Tags | Preventive | `tfplan.json`, `policies/tags.rego` | `opa_tags_result.json` |
+| Generate Report | Preventive | `tfsec_results.json`, `checkov_results.json`, `opa_*_result.json` | `security_report.json` |
 | Terraform Apply | Preventive | `terraform/tfplan` | Azure resources |
-| Notify Warnings | Preventive | `warnings.txt` | `teams_payload.json` |
-| Init Workspace | Remediative | — | `outputs/` directory |
-| Drift Detection | Remediative | Azure live state | `outputs/drift_results.json` |
-| CIS Mapping | Remediative | `outputs/drift_results.json` | `outputs/remediate_drift.bat` (only if drift found) |
-| Remediation | Remediative | `outputs/remediate_drift.bat` | Azure resource properties |
+| Notify Teams | Preventive | `blocking.txt`, `warnings.txt` | `teams_payload.json` |
+| Checkout Code | Remediative | — | `outputs/` directory (cleaned) |
+| Environment Setup | Remediative | — | Azure auth session |
+| Query ARG | Remediative | Azure live state | `outputs/*_raw.json` |
+| Audit Engine | Remediative | `outputs/*_raw.json`, `terraform/*.tf` | `outputs/*_drift.json`, `outputs/*_remediate.bat`, `outputs/tfsec_scan.json`, `outputs/opa_cis_result.json`, `outputs/compliance_dashboard_pre_remediation.json` |
+| Self-Healing & Alerts | Remediative | `outputs/*_drift.json`, `outputs/*_remediate.bat` | Azure resource properties, `outputs/compliance_dashboard_post_remediation.json`, `outputs/teams_payload.json` |

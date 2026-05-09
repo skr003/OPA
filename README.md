@@ -8,34 +8,59 @@ A Cloud Security Posture Management (CSPM) framework for Microsoft Azure that en
 
 ```
 OPA-main/
-├── Jenkinsfile.preventive        Jenkins pipeline — pre-deployment policy gate (5 scenarios)
-├── Jenkinsfile.remediative       Jenkins pipeline — drift detection & auto-fix
-├── requirements.txt              Python dependencies
+├── Jenkinsfile.preventive         Jenkins pipeline — pre-deployment policy gate
+├── Jenkinsfile.remediative        Jenkins pipeline — drift detection & auto-fix
+├── parse_findings.py              tfsec + Checkov JSON → blocking/warnings classifier
+├── generate_report.py             Consolidated security_report.json generator
+├── requirements.txt               Python dependencies
+│
 ├── policies/
-│   ├── cis_azure.rego            OPA: CIS Azure Benchmark v3.0 (tfsec-based)
-│   ├── vm_size.rego              OPA: VM size enforcement per environment
-│   └── tags.rego                 OPA: mandatory tag governance
+│   ├── cis_azure.rego             OPA: CIS Azure Benchmark v3.0 (input: tfsec JSON)
+│   ├── vm_size.rego               OPA: VM size enforcement per environment
+│   └── tags.rego                  OPA: mandatory tag governance
+│
 ├── scripts/
-│   └── cis_mapper.py             Drift findings → remediation command generator
+│   ├── query_azure.py             Fires all 4 Azure Resource Graph queries → *_raw.json
+│   ├── detect_nsg_drift.py        CIS 6.1/6.2 — open SSH/RDP ports on NSGs
+│   ├── detect_storage_drift.py    CIS 3.15/3.5 — Storage HTTPS + public blob
+│   ├── detect_scaling_drift.py    Cost Governance — VMs outside IaC baseline sizes
+│   ├── detect_iam_drift.py        CIS 1.1 — unauthorized high-privilege role assignments
+│   ├── generate_dashboard.py      Compliance % aggregator → compliance_dashboard_*.json
+│   └── cis_mapper.py              Legacy drift → remediation command generator
+│
 └── terraform/
-    ├── main.tf                   Azure provider + resource group
-    ├── variables.tf              Input variables
-    ├── outputs.tf                Output resource IDs
-    ├── storage_pass.tf           Compliant storage account (passes all checks)
-    └── storage_fail.tf           Non-compliant storage account (for testing)
+    ├── main.tf                    ALL resources: provider, RG, VNet, NSG, NIC, VM, Storage
+    ├── variables.tf               Input variables (environment, vm_size, prefix, etc.)
+    ├── outputs.tf                 Output resource IDs
+    ├── storage_pass.tf            (deprecated — resources moved to main.tf)
+    └── storage_fail.tf            (deprecated — resources moved to main.tf)
 ```
 
 ---
 
 ## CIS Controls Enforced
 
-| CIS Rule | Benchmark | tfsec ID | Description |
-|----------|-----------|----------|-------------|
-| 3.1 | Secure Transfer | AVD-AZU-0010 | HTTPS-only access required |
-| 3.2 | Infrastructure Encryption | AVD-AZU-0014 | Encryption at rest required |
-| 3.6 | Blob Public Access | AVD-AZU-0012 | Public blob access must be disabled |
-| 3.7 | Default Network Action | AVD-AZU-0011 | Network default action must be Deny |
-| 3.10 | Minimum TLS Version | AVD-AZU-0013 | TLS 1.2 or higher required |
+### Preventive Pipeline (IaC — pre-deployment)
+
+| Check | Tool | CIS Rule | tfsec ID | Description |
+|-------|------|----------|----------|-------------|
+| Static Analysis | tfsec | 3.1 | AVD-AZU-0010 | HTTPS-only required |
+| Static Analysis | tfsec | 3.2 | AVD-AZU-0014 | Infrastructure encryption |
+| Static Analysis | tfsec | 3.6 | AVD-AZU-0012 | Public blob access disabled |
+| Static Analysis | tfsec | 3.7 | AVD-AZU-0011 | Network default action: Deny |
+| Static Analysis | tfsec | 3.10 | AVD-AZU-0013 | TLS 1.2 minimum |
+| Cost Governance | OPA | — | vm_size.rego | VM size within per-env allowlist |
+| Tag Governance | OPA | — | tags.rego | Environment, CostCenter, ManagedBy required |
+
+### Remediative Pipeline (Live Azure — post-deployment)
+
+| Check | Tool | CIS Rule | Description |
+|-------|------|----------|-------------|
+| CIS Benchmark | tfsec + OPA | 3.1/3.2/3.6/3.7/3.10 | cis_azure.rego against fresh tfsec scan |
+| NSG Open Ports | Python + ARG | 6.1 / 6.2 | SSH/RDP open to internet |
+| Storage HTTPS | Python + ARG | 3.15 / 3.5 | HTTPS-only disabled or public blob on |
+| VM Scaling | Python + ARG | Cost | VMs beyond IaC approved sizes |
+| IAM Tampering | Python + ARG | 1.1 | Unauthorized Owner/Contributor assignments |
 
 ---
 
@@ -44,13 +69,42 @@ OPA-main/
 | Layer | Tool |
 |-------|------|
 | Policy Engine | Open Policy Agent (OPA) + Rego |
-| IaC Scanners | tfsec + Checkov (parallel) |
+| IaC Scanners | tfsec + Checkov (run in parallel) |
 | Infrastructure | Terraform (azurerm provider v4.0+) |
 | Cloud Platform | Microsoft Azure |
 | CI/CD | Jenkins (Windows agent) |
 | Scripting | Python 3.12, Windows Batch |
 | Cloud API | Azure CLI, Azure Resource Graph |
 | Notifications | Microsoft Teams (incoming webhook) |
+
+---
+
+## Terraform Resources (main.tf)
+
+All resources required by both pipelines are defined in `terraform/main.tf`:
+
+| Resource | Type | Purpose |
+|----------|------|---------|
+| `azurerm_resource_group.main` | Core | Shared container for all resources |
+| `azurerm_virtual_network.main` | Networking | VNet for VM placement |
+| `azurerm_subnet.main` | Networking | Subnet within VNet |
+| `azurerm_network_security_group.main` | Security | Deny-all NSG (no open ports) |
+| `azurerm_subnet_network_security_group_association.main` | Security | Binds NSG to subnet |
+| `azurerm_network_interface.main` | Networking | NIC for the Linux VM |
+| `azurerm_linux_virtual_machine.main` | Compute | Exercises OPA `vm_size.rego` |
+| `azurerm_storage_account.secure` | Storage | Passes all CIS 3.x checks |
+| `azurerm_storage_account.vulnerable` | Storage | Intentional CIS 3.6 violation (demo) |
+
+All tagged resources carry `Environment`, `CostCenter`, and `ManagedBy` as required by `policies/tags.rego`.
+
+### Key Variable Defaults
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `environment` | `dev` | Controls OPA vm_size allowlist |
+| `vm_size` | `Standard_B2s` | Must be in allowlist — change to trigger cost violation |
+| `prefix` | `secops` | Prepended to all resource names |
+| `cost_center` | `security-lab` | Value of the CostCenter mandatory tag |
 
 ---
 
@@ -68,78 +122,91 @@ OPA-main/
 | `curl` | ships with Windows 10/11 |
 | Python 3.12 | `C:/Users/admin/AppData/Local/Programs/Python/Python312/` |
 
-### Jenkins Credentials Store
+### Jenkins Credentials
 
 | Credential ID | Used By | Description |
 |---------------|---------|-------------|
-| `AZURE_SUBSCRIPTION_ID` | remediative | Azure subscription ID |
-| `AZURE_CLIENT_ID` | remediative | Service principal App ID |
-| `AZURE_CLIENT_SECRET` | remediative | Service principal secret |
-| `AZURE_TENANT_ID` | remediative | Azure AD tenant ID |
-| `TEAMS_WEBHOOK_URL` | preventive | Teams incoming webhook URL |
+| `AZURE_SUBSCRIPTION_ID` | Both | Azure subscription ID |
+| `AZURE_CLIENT_ID` | Both | Service principal App ID |
+| `AZURE_CLIENT_SECRET` | Both | Service principal secret |
+| `AZURE_TENANT_ID` | Both | Azure AD tenant ID |
+| `TEAMS_WEBHOOK_URL` | Both | Teams incoming webhook URL |
 
-The service principal requires **Reader** access to query Azure Resource Graph and **Contributor** access on target storage accounts for remediation.
-
-### Python Dependencies
-
-```
-pip install -r requirements.txt
-```
+The service principal requires **Reader** on the subscription (Resource Graph queries) and **Contributor** on remediated resources.
 
 ---
 
 ## Pipeline 1 — Preventive (`Jenkinsfile.preventive`)
 
-Runs on every pull request or push to a protected branch. Demonstrates five layered compliance scenarios end-to-end.
+Runs on every pull request or push. Blocks non-compliant IaC before any resource reaches Azure.
 
-| Scenario | What it demonstrates | Gate |
-|----------|---------------------|------|
-| 1 — Perfect PR | Fully compliant code travels through every stage and deploys | All pass → apply |
-| 2 — Insecure Cloud Defaults | tfsec + Checkov catch encryption-off, public access, etc. with exact file:line | CRITICAL/HIGH → fail fast |
-| 3 — VM Size Policy | OPA blocks oversized VMs in dev/staging regardless of security status | Cost violation → blocked |
-| 4 — Missing Tags | OPA rejects resources missing `Environment`, `CostCenter`, or `ManagedBy` | Governance violation → blocked |
-| 5 — Advise & Notify | MEDIUM/LOW findings deploy successfully but fire a Teams advisory message | Non-blocking warning |
+### Stages
 
-**Stages:**
+| Stage | What runs | Output |
+|-------|-----------|--------|
+| **Checkout Code** | `checkout scm` | — |
+| **Terraform Init & Validate** | `terraform init` + `terraform validate` (catchError — UNSTABLE on failure) | — |
+| **Layer A: Static Analysis** | tfsec + Checkov in parallel | `tfsec_results.json`, `checkov_results.json` |
+| **Evaluate Security Findings** | `parse_findings.py` — CRITICAL/HIGH → `unstable()`, MEDIUM/LOW → advisory | `findings.json`, `blocking.txt`, `warnings.txt` |
+| **Terraform Plan generation** | `terraform plan` + `terraform show -json` (catchError — UNSTABLE on failure) | `tfplan.json`, `env_config.json` |
+| **Layer B: OPA Policy Validation** | VM Size + Mandatory Tags in parallel | `opa_vm_result.json`, `opa_tags_result.json` |
+| **Generate Security Report** | `generate_report.py` | `security_report.json` |
+| **Archive Security Report** | `archiveArtifacts` | All JSON files on build page |
+| **Terraform Apply (Deploy)** | `terraform apply` — only when `currentResult == SUCCESS` | Azure resources |
+| **Notify Teams** | Color-coded Teams card (GREEN/ORANGE/RED) | `teams_payload.json` |
 
-1. **Checkout** — pull code from SCM
-2. **IaC Static Analysis** — tfsec + Checkov run in parallel; both write JSON output
-3. **Evaluate Security Findings** — CRITICAL/HIGH block the build with file:line detail; MEDIUM/LOW queued as warnings
-4. **Terraform Plan** — generates `tfplan.json` and `env_config.json` for OPA plan-based checks
-5. **OPA Policy Checks** — three checks in parallel: CIS Compliance, VM Size Policy, Mandatory Tags
-6. **Terraform Apply** — reuses the pre-validated plan; only reached if every check above passes
-7. **Notify Warnings** — posts advisory findings to Teams (MessageCard); conditional on warnings existing; build stays GREEN
+### OPA Policies in Layer B
 
-Set `ENVIRONMENT = 'dev' | 'staging' | 'prod'` in the pipeline env block to control which VM-size allowlist OPA enforces.
+| Sub-stage | Policy | Input | Blocks On |
+|-----------|--------|-------|-----------|
+| VM Size Policy | `policies/vm_size.rego` | `tfplan.json` + `env_config.json` | VM size outside env allowlist |
+| Mandatory Tags | `policies/tags.rego` | `tfplan.json` | Missing `Environment`, `CostCenter`, or `ManagedBy` |
 
 ---
 
 ## Pipeline 2 — Remediative (`Jenkinsfile.remediative`)
 
-Runs on a schedule (or on demand) against live Azure resources. Queries Azure Resource Graph for CIS 3.6 drift (public blob access), generates fix commands, and applies them automatically.
+Runs on a schedule or manually against live Azure resources. Detects drift, auto-remediates where safe, and notifies for everything else.
 
-**Stages:**
+### Stages
 
-1. **Initialize Workspace** — creates `outputs/` directory, clears previous run artefacts
-2. **Detect Infrastructure Drift** — logs in via service principal; Azure Resource Graph query for `allowBlobPublicAccess == true`; results written to `outputs/drift_results.json`
-3. **CIS Benchmark Mapping** — `cis_mapper.py` reads the drift results and writes `outputs/remediate_drift.bat` (only when non-compliant resources are found)
-4. **Remediate & Notify** — executes the `.bat` if it exists; each command runs `az storage account update --allow-blob-public-access false`; prints "COMPLIANCE VERIFIED" if no drift was found
+| Stage | What runs | Output |
+|-------|-----------|--------|
+| **Checkout Code** | `checkout scm` + clean `outputs/` | — |
+| **Environment Setup** | `az login` + `az account set` | — |
+| **Query Azure Resource Graph** | `query_azure.py` — 4 parallel ARG queries | `outputs/*_raw.json` |
+| **Execute Python Audit Engine (CIS Mapping)** | 4 detect scripts + tfsec + OPA CIS check + dashboard | `outputs/*_drift.json`, `outputs/opa_cis_result.json`, `outputs/compliance_dashboard_pre_remediation.json` |
+| **Generate Remediation Scripts** | Preview + archive all `*_remediate.bat` files | `outputs/*.bat` |
+| **Trigger Self-Healing & Alerts** | Scenario 1 auto-fix → Scenario 2 approval → Scenario 3 notify → Scenario 4 alert → post-remediation scan → Teams | `outputs/compliance_dashboard_post_remediation.json` |
+
+### Remediation Modes
+
+| Scenario | Drift Detected | Action | Build Result |
+|----------|---------------|--------|--------------|
+| 1 — NSG open ports | Port 22/3389 open to internet | Auto-fix: set rule to Deny | SUCCESS |
+| 2 — Storage HTTPS | HTTPS-only off or public blob on | Manual approval gate (30 min timeout) | SUCCESS if approved |
+| 3 — VM scaling | VM size outside IaC baseline | Notify DevOps, script generated | UNSTABLE |
+| 4 — IAM tampering | Unauthorized Owner/Contributor at sub scope | Alert security team, removal script generated | UNSTABLE |
 
 ---
 
 ## OPA Policies
 
-### `cis_azure.rego` — CIS Azure Benchmark (input: `tfsec_results.json`)
+### `cis_azure.rego` — CIS Azure Benchmark (remediative pipeline)
+Input: `outputs/tfsec_scan.json` (fresh tfsec run on checked-out Terraform)
 
-Evaluates tfsec findings against five CIS rules. Resources can be whitelisted in `exception_list` to suppress known-approved violations:
+Evaluates 5 CIS controls. Resources can be whitelisted in `exception_list`.
 
-```rego
-exception_list := {"resource_name_here"}
-```
+| tfsec ID | CIS # | Violation produced |
+|----------|-------|--------------------|
+| AVD-AZU-0010 | 3.1 | Secure transfer (HTTPS) disabled |
+| AVD-AZU-0012 | 3.6 | Public blob access enabled |
+| AVD-AZU-0011 | 3.7 | Network default action not Deny |
+| AVD-AZU-0013 | 3.10 | TLS below 1.2 |
+| AVD-AZU-0014 | 3.2 | Infrastructure encryption disabled |
 
-### `vm_size.rego` — VM Size Enforcement (input: `tfplan.json` + `env_config.json`)
-
-Blocks VM deployments that use a size not on the environment's allowlist:
+### `vm_size.rego` — VM Size Enforcement (preventive pipeline)
+Input: `tfplan.json` + `env_config.json`
 
 | Environment | Permitted sizes |
 |-------------|----------------|
@@ -147,40 +214,40 @@ Blocks VM deployments that use a size not on the environment's allowlist:
 | `staging` | B2s, B4ms, D2s_v3, D4s_v3, D8s_v3 |
 | `prod` | D2–D16s_v3, E4–E16s_v3 |
 
-Covers both `azurerm_linux/windows_virtual_machine` (field: `size`) and legacy `azurerm_virtual_machine` (field: `vm_size`).
+### `tags.rego` — Mandatory Tag Governance (preventive pipeline)
+Input: `tfplan.json`
 
-### `tags.rego` — Mandatory Tag Governance (input: `tfplan.json`)
-
-Every tracked resource must carry all three mandatory tags or the deployment is blocked:
-
-| Tag | Purpose |
-|-----|---------|
-| `Environment` | Traceability (dev / staging / prod) |
-| `CostCenter` | Financial attribution |
-| `ManagedBy` | Operational ownership |
-
-Tracked types: `azurerm_resource_group`, `azurerm_storage_account`, VMs, Key Vault, SQL Server, App Service.
+Required tags on all tracked resource types: `Environment`, `CostCenter`, `ManagedBy`
 
 ---
 
-## Terraform Test Resources
+## Artifacts Reference
 
-The `terraform/` directory contains two intentionally contrasting storage accounts for validating the preventive pipeline end-to-end:
-
-- **`storage_pass.tf`** — fully CIS-compliant: TLS 1.2, public access disabled, network default Deny, infrastructure encryption enabled, versioning and soft delete active.
-- **`storage_fail.tf`** — intentionally violates CIS 3.6 (public blob access enabled, no network rules). Used to verify the pipeline correctly blocks non-compliant deployments.
-
----
-
-## Outputs
+### Preventive Pipeline
 
 | File | Created By | Contents |
 |------|-----------|---------|
-| `tfsec_results.json` | tfsec (Stage 2, preventive) | Static analysis findings with AVD rule IDs and severity |
-| `checkov_results.json` | Checkov (Stage 2, preventive) | Additional IaC scan findings |
-| `warnings.txt` | Evaluate stage (Stage 3, preventive) | MEDIUM/LOW findings for Slack notification |
-| `env_config.json` | Terraform Plan stage (Stage 4, preventive) | `{"config":{"environment":"dev"}}` — OPA environment context |
-| `tfplan.json` | Terraform (Stage 4, preventive) | Full Terraform plan in JSON — OPA VM size + tags input |
-| `teams_payload.json` | Notify Warnings stage (Stage 7, preventive) | Teams MessageCard payload |
-| `outputs/drift_results.json` | Azure CLI (Stage 2, remediative) | Resource Graph query results |
-| `outputs/remediate_drift.bat` | `cis_mapper.py` (Stage 3, remediative) | Azure CLI remediation commands — only created when drift is found |
+| `tfsec_results.json` | tfsec | Findings with AVD IDs, severity, file:line |
+| `checkov_results.json` | Checkov | Additional IaC findings |
+| `findings.json` | `parse_findings.py` | Combined summary with blocking/warnings split |
+| `blocking.txt` | `parse_findings.py` | CRITICAL/HIGH messages (pipeline fails if non-empty) |
+| `warnings.txt` | `parse_findings.py` | MEDIUM/LOW advisory messages |
+| `env_config.json` | Terraform Plan stage | `{"config":{"environment":"dev"}}` |
+| `tfplan.json` | Terraform | Full plan JSON — OPA vm_size + tags input |
+| `opa_vm_result.json` | OPA | VM Size Policy result |
+| `opa_tags_result.json` | OPA | Mandatory Tags result |
+| `security_report.json` | `generate_report.py` | One row per check: tool, check_id, severity, input, status, reason |
+
+### Remediative Pipeline
+
+| File | Created By | Contents |
+|------|-----------|---------|
+| `outputs/*_raw.json` | `query_azure.py` | Raw Azure Resource Graph query results |
+| `outputs/*_drift.json` | `detect_*.py` | Structured drift findings per scenario |
+| `outputs/*_remediate.bat` | `detect_*.py` | Azure CLI remediation commands |
+| `outputs/tfsec_scan.json` | tfsec | Fresh tfsec scan for CIS OPA check |
+| `outputs/opa_cis_result.json` | OPA | CIS Azure Benchmark result |
+| `outputs/compliance_dashboard_pre_remediation.json` | `generate_dashboard.py` | Compliance % before fixes |
+| `outputs/compliance_dashboard_post_remediation.json` | `generate_dashboard.py` | Compliance % after fixes |
+| `outputs/compliance_dashboard_latest.json` | `generate_dashboard.py` | Latest snapshot (dashboard polling) |
+| `outputs/teams_payload.json` | Trigger Self-Healing & Alerts stage | Teams MessageCard payload sent to TEAMS_WEBHOOK_URL |

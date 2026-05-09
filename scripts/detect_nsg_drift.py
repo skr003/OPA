@@ -14,20 +14,26 @@ def run_az(cmd):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 def main():
-    print("[NSG] Querying Azure Resource Graph for open SSH/RDP rules...")
-    kql = (
-        "Resources"
-        " | where type =~ 'Microsoft.Network/networkSecurityGroups'"
-        " | mv-expand rules = properties.securityRules"
-        " | where rules.properties.direction =~ 'Inbound'"
-        "   and rules.properties.access =~ 'Allow'"
-        " | project id, name, resourceGroup,"
-        "   ruleName=tostring(rules.name),"
-        "   port=tostring(rules.properties.destinationPortRange),"
-        "   source=tostring(rules.properties.sourceAddressPrefix)"
-    )
-    raw = run_az(f'az graph query -q "{kql}" --output json')
-    data = raw.get("data", []) if raw else []
+    raw_path = os.path.join(OUTPUTS, "nsg_raw.json")
+    if os.path.exists(raw_path):
+        print("[NSG] Reading pre-queried data from nsg_raw.json...")
+        with open(raw_path) as f:
+            data = json.load(f).get("data", [])
+    else:
+        print("[NSG] Querying Azure Resource Graph for open SSH/RDP rules...")
+        kql = (
+            "Resources"
+            " | where type =~ 'Microsoft.Network/networkSecurityGroups'"
+            " | mv-expand rules = properties.securityRules"
+            " | where rules.properties.direction =~ 'Inbound'"
+            "   and rules.properties.access =~ 'Allow'"
+            " | project id, name, resourceGroup,"
+            "   ruleName=tostring(rules.name),"
+            "   port=tostring(rules.properties.destinationPortRange),"
+            "   source=tostring(rules.properties.sourceAddressPrefix)"
+        )
+        raw = run_az(f'az graph query -q "{kql}" --output json')
+        data = raw.get("data", []) if raw else []
 
     drifted = []
     for row in data:

@@ -15,9 +15,24 @@ pipeline {
         // -------------------------------------------------------------------
         // SCENARIO 1 – Entry point. Every build starts here.
         // -------------------------------------------------------------------
-        stage('Checkout') {
+        stage('Checkout Code') {
             steps {
                 checkout scm
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Initialise Terraform providers and validate HCL syntax before any
+        // scanning or planning takes place.
+        // -------------------------------------------------------------------
+        stage('Terraform Init & Validate') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    dir('terraform') {
+                        bat "${env.TF_EXE} init -upgrade -input=false"
+                        bat "${env.TF_EXE} validate"
+                    }
+                }
             }
         }
 
@@ -26,7 +41,7 @@ pipeline {
         // tfsec and Checkov run in parallel. Both write JSON that feeds the
         // next stage. Neither fails the build directly.
         // -------------------------------------------------------------------
-        stage('IaC Static Analysis') {
+        stage('Layer A: Static Analysis (Checkov / tfsec)') {
             parallel {
 
                 stage('tfsec') {
@@ -75,7 +90,7 @@ pipeline {
         // Wrapped in catchError so OPA can still run and report even if
         // Terraform cannot connect (e.g., no Azure credentials in CI).
         // -------------------------------------------------------------------
-        stage('Terraform Plan') {
+        stage('Terraform Plan generation') {
             steps {
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     script {
@@ -85,7 +100,6 @@ pipeline {
                                   ])
                     }
                     dir('terraform') {
-                        bat "${env.TF_EXE} init -upgrade -input=false"
                         bat "${env.TF_EXE} plan -out=tfplan -input=false"
                         bat "${env.TF_EXE} show -json tfplan > ../tfplan.json"
                     }
@@ -94,41 +108,14 @@ pipeline {
         }
 
         // -------------------------------------------------------------------
-        // SCENARIO 2/3/4 – OPA Policy Checks (parallel).
+        // SCENARIO 3/4 – OPA Policy Validation (parallel).
+        // CIS Azure Benchmark has moved to the remediative pipeline where it
+        // runs against live infrastructure via tfsec + OPA.
+        // VM Size and Mandatory Tags remain here as pre-deployment IaC gates.
         // Each check writes its own JSON result file.
-        // Violations mark the build UNSTABLE (not FAILURE) so all three
-        // checks always complete and the archive stage always runs.
         // -------------------------------------------------------------------
-        stage('OPA Policy Checks') {
+        stage('Layer B: OPA Policy Validation') {
             parallel {
-
-                // Scenario 2 — CIS Azure Benchmark re-check on tfsec output
-                stage('CIS Compliance') {
-                    steps {
-                        script {
-                            def result = bat(
-                                script: """@echo off
-${env.OPA_EXE} eval -i tfsec_results.json -d policies/cis_azure.rego "data.cis.azure.deny" --format pretty""",
-                                returnStdout: true
-                            ).trim()
-                            echo "--- CIS Compliance ---\n${result}"
-                            def hasViolation = result.contains('VIOLATION')
-                            def violationLines = result.split('\n').findAll { it.trim().contains('VIOLATION') }
-                            writeFile file: 'opa_cis_result.json', text: groovy.json.JsonOutput.prettyPrint(
-                                groovy.json.JsonOutput.toJson([
-                                    check      : 'CIS Compliance',
-                                    policy     : 'policies/cis_azure.rego',
-                                    status     : hasViolation ? 'FAILED' : 'PASSED',
-                                    violations : violationLines,
-                                    raw_output : result
-                                ])
-                            )
-                            if (hasViolation) {
-                                unstable("OPA: CIS Compliance check failed — see opa_cis_result.json")
-                            }
-                        }
-                    }
-                }
 
                 // Scenario 3 — VM size cost control
                 stage('VM Size Policy') {
@@ -229,7 +216,7 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         // -------------------------------------------------------------------
         stage('Archive Security Report') {
             steps {
-                archiveArtifacts artifacts: 'security_report.json, findings.json, tfsec_results.json, checkov_results.json, opa_cis_result.json, opa_vm_result.json, opa_tags_result.json',
+                archiveArtifacts artifacts: 'security_report.json, findings.json, tfsec_results.json, checkov_results.json, opa_vm_result.json, opa_tags_result.json',
                                  allowEmptyArchive: true
             }
         }
@@ -240,7 +227,7 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         // Any unstable() call above will cause this stage to be skipped,
         // ensuring no infrastructure is changed when violations exist.
         // -------------------------------------------------------------------
-        stage('Terraform Apply') {
+        stage('Terraform Apply (Deploy)') {
             when {
                 expression { currentBuild.currentResult == 'SUCCESS' }
             }

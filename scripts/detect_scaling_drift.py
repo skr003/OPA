@@ -19,15 +19,21 @@ def run_az(cmd):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 def main():
-    print("[Scaling] Querying live VM sizes against IaC baseline...")
-    kql = (
-        "Resources"
-        " | where type =~ 'Microsoft.Compute/virtualMachines'"
-        " | project id, name, resourceGroup,"
-        "   vmSize=tostring(properties.hardwareProfile.vmSize)"
-    )
-    raw = run_az(f'az graph query -q "{kql}" --output json')
-    data = raw.get("data", []) if raw else []
+    raw_path = os.path.join(OUTPUTS, "scaling_raw.json")
+    if os.path.exists(raw_path):
+        print("[Scaling] Reading pre-queried data from scaling_raw.json...")
+        with open(raw_path) as f:
+            data = json.load(f).get("data", [])
+    else:
+        print("[Scaling] Querying live VM sizes against IaC baseline...")
+        kql = (
+            "Resources"
+            " | where type =~ 'Microsoft.Compute/virtualMachines'"
+            " | project id, name, resourceGroup,"
+            "   vmSize=tostring(properties.hardwareProfile.vmSize)"
+        )
+        raw = run_az(f'az graph query -q "{kql}" --output json')
+        data = raw.get("data", []) if raw else []
 
     drifted = []
     for row in data:

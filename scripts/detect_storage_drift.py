@@ -12,18 +12,24 @@ def run_az(cmd):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 def main():
-    print("[Storage] Querying for accounts with HTTPS-only disabled...")
-    kql = (
-        "Resources"
-        " | where type =~ 'Microsoft.Storage/storageAccounts'"
-        " | where properties.supportsHttpsTrafficOnly == false"
-        "    or properties.allowBlobPublicAccess == true"
-        " | project id, name, resourceGroup,"
-        "   httpsOnly=tostring(properties.supportsHttpsTrafficOnly),"
-        "   publicBlob=tostring(properties.allowBlobPublicAccess)"
-    )
-    raw = run_az(f'az graph query -q "{kql}" --output json')
-    data = raw.get("data", []) if raw else []
+    raw_path = os.path.join(OUTPUTS, "storage_raw.json")
+    if os.path.exists(raw_path):
+        print("[Storage] Reading pre-queried data from storage_raw.json...")
+        with open(raw_path) as f:
+            data = json.load(f).get("data", [])
+    else:
+        print("[Storage] Querying for accounts with HTTPS-only disabled...")
+        kql = (
+            "Resources"
+            " | where type =~ 'Microsoft.Storage/storageAccounts'"
+            " | where properties.supportsHttpsTrafficOnly == false"
+            "    or properties.allowBlobPublicAccess == true"
+            " | project id, name, resourceGroup,"
+            "   httpsOnly=tostring(properties.supportsHttpsTrafficOnly),"
+            "   publicBlob=tostring(properties.allowBlobPublicAccess)"
+        )
+        raw = run_az(f'az graph query -q "{kql}" --output json')
+        data = raw.get("data", []) if raw else []
 
     drifted = []
     for row in data:
