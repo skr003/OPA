@@ -67,45 +67,18 @@ pipeline {
         stage('Evaluate Security Findings') {
             steps {
                 script {
-                    def blocking = []
-                    def warnings = []
+                    // Python parses both JSON files and writes blocking.txt / warnings.txt.
+                    // Exits 1 if CRITICAL/HIGH violations exist, 0 otherwise.
+                    def exitCode = bat(returnStatus: true, script: 'python parse_findings.py')
 
-                    // ---- tfsec ------------------------------------------------
-                    def tfsecData = readJSON file: 'tfsec_results.json'
-                    tfsecData.results?.each { r ->
-                        def sev = (r.severity ?: 'UNKNOWN').toUpperCase()
-                        def loc = "${r.location?.filename}:${r.location?.start_line}"
-                        def msg = "[tfsec] ${r.rule_id} | ${sev} | ${r.description} — ${loc}"
-                        if (sev in ['CRITICAL', 'HIGH']) { blocking << msg }
-                        else                             { warnings << msg  }
+                    def warningsContent = readFile('warnings.txt').trim()
+                    env.HAS_WARNINGS = (warningsContent.length() > 0).toString()
+
+                    if (exitCode != 0) {
+                        def blockingContent = readFile('blocking.txt').trim()
+                        error "STATIC ANALYSIS FAILED — blocking violation(s) found:\n\n${blockingContent}"
                     }
-
-                    // ---- Checkov ----------------------------------------------
-                    // checkov may prepend non-JSON text; strip it before parsing.
-                    def checkovRaw  = readFile('checkov_results.json')
-                    def jsonStart   = checkovRaw.indexOf('{')
-                    if (jsonStart >= 0) {
-                        def checkovData = readJSON text: checkovRaw.substring(jsonStart)
-                        checkovData.results?.failed_checks?.each { c ->
-                            // Checkov stores severity at check level (v3.x) or
-                            // at result level (older); fall back to MEDIUM.
-                            def sev = (c.severity ?: c.check?.severity ?: 'MEDIUM')
-                                          .toString().toUpperCase()
-                            def loc = "${c.repo_file_path}:${c.file_line_range?.get(0)}"
-                            def msg = "[checkov] ${c.check_id} | ${sev} | ${c.check?.name ?: c.check_id} — ${loc}"
-                            if (sev in ['CRITICAL', 'HIGH']) { blocking << msg }
-                            else                             { warnings << msg  }
-                        }
-                    }
-
-                    // Persist warnings to a file to avoid env-var size limits.
-                    writeFile file: 'warnings.txt', text: warnings.join('\n')
-                    env.HAS_WARNINGS = (warnings.size() > 0).toString()
-
-                    if (blocking) {
-                        error "STATIC ANALYSIS FAILED — ${blocking.size()} blocking violation(s) found:\n\n${blocking.join('\n')}"
-                    }
-                    echo "Static analysis passed. ${warnings.size()} advisory finding(s) noted."
+                    echo "Static analysis passed. Advisory finding(s): ${warningsContent ? warningsContent.split('\n').length : 0}"
                 }
             }
         }
