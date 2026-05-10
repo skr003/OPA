@@ -41,20 +41,10 @@ pipeline {
         // next stage. Neither fails the build directly.
         // -------------------------------------------------------------------
         stage('Layer A: Static Analysis (Checkov / tfsec)') {
-            parallel {
-
-                stage('tfsec') {
-                    steps {
-                        bat "${env.TFSEC_EXE} terraform --format json --include-passed > tfsec_results.json"
-                    }
-                }
-
-                stage('Checkov') {
-                    steps {
-                        bat(returnStatus: true,
-                            script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>checkov_error.log")
-                    }
-                }
+            steps {
+                bat "${env.TFSEC_EXE} terraform --format json --include-passed > tfsec_results.json"
+                bat(returnStatus: true,
+                    script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>checkov_error.log")
             }
         }
 
