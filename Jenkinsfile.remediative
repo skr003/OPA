@@ -161,7 +161,7 @@ ${env.OPA_EXE} eval -i outputs/tfsec_scan.json -d policies/cis_azure.rego "data.
                     ].each { s ->
                         if (fileExists(s.file)) {
                             echo "\n--- ${s.label} ---"
-                            bat "type ${s.file}"
+                            bat "type ${s.file.replace('/', '\\')}"
                         } else {
                             echo "\n--- ${s.label} --- (no drift detected, script not generated)"
                         }
