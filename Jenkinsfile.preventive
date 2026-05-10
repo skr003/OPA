@@ -189,6 +189,9 @@ ${env.OPA_EXE} eval -i outputs/tfplan.json -d policies/tags.rego "data.policy.ta
     }
 
     post {
+        always {
+            archiveArtifacts artifacts: 'outputs/**', allowEmptyArchive: true
+        }
         success {
             echo "Pipeline complete — infrastructure deployed and fully compliant."
         }
