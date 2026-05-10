@@ -24,6 +24,7 @@ pipeline {
                 if not exist outputs mkdir outputs
                 del /f /q outputs\\*.json 2>nul
                 del /f /q outputs\\*.bat  2>nul
+                del /f /q outputs\\*.log  2>nul
                 echo [Init] Workspace ready.
                 '''
             }

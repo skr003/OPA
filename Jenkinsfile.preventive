@@ -13,10 +13,18 @@ pipeline {
 
         // -------------------------------------------------------------------
         // SCENARIO 1 – Entry point. Every build starts here.
+        // Clean the outputs/ folder so stale artifacts from a previous run
+        // cannot influence this build.
         // -------------------------------------------------------------------
         stage('Checkout Code') {
             steps {
                 checkout scm
+                bat '''
+                if not exist outputs mkdir outputs
+                del /f /q outputs\\*.json 2>nul
+                del /f /q outputs\\*.log  2>nul
+                echo [Init] Workspace ready.
+                '''
             }
         }
 
@@ -37,14 +45,14 @@ pipeline {
 
         // -------------------------------------------------------------------
         // SCENARIO 2 – IaC Static Analysis.
-        // tfsec and Checkov run in parallel. Both write JSON that feeds the
-        // next stage. Neither fails the build directly.
+        // tfsec then Checkov run sequentially. Both write JSON to outputs/.
+        // Neither fails the build directly.
         // -------------------------------------------------------------------
         stage('Layer A: Static Analysis (Checkov / tfsec)') {
             steps {
-                bat "${env.TFSEC_EXE} terraform --format json --include-passed > tfsec_results.json"
+                bat "${env.TFSEC_EXE} terraform --format json --include-passed > outputs/tfsec_results.json"
                 bat(returnStatus: true,
-                    script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>checkov_error.log")
+                    script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > outputs/checkov_results.json 2>outputs/checkov_error.log")
             }
         }
 
@@ -57,14 +65,14 @@ pipeline {
             steps {
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     script {
-                        writeFile file: 'env_config.json',
+                        writeFile file: 'outputs/env_config.json',
                                   text: groovy.json.JsonOutput.toJson([
                                       config: [environment: env.ENVIRONMENT]
                                   ])
                     }
                     dir('terraform') {
                         bat "${env.TF_EXE} plan -out=tfplan -input=false"
-                        bat "${env.TF_EXE} show -json tfplan > ../tfplan.json"
+                        bat "${env.TF_EXE} show -json tfplan > ../outputs/tfplan.json"
                     }
                 }
             }
@@ -75,7 +83,7 @@ pipeline {
         // CIS Azure Benchmark has moved to the remediative pipeline where it
         // runs against live infrastructure via tfsec + OPA.
         // VM Size and Mandatory Tags remain here as pre-deployment IaC gates.
-        // Each check writes its own JSON result file.
+        // Each check writes its own JSON result file to outputs/.
         // -------------------------------------------------------------------
         stage('Layer B: OPA Policy Validation') {
             parallel {
@@ -84,27 +92,27 @@ pipeline {
                 stage('VM Size Policy') {
                     steps {
                         script {
-                            if (!fileExists('tfplan.json')) {
-                                echo "Skipping VM Size Policy — tfplan.json unavailable."
-                                writeFile file: 'opa_vm_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                            if (!fileExists('outputs/tfplan.json')) {
+                                echo "Skipping VM Size Policy — outputs/tfplan.json unavailable."
+                                writeFile file: 'outputs/opa_vm_result.json', text: groovy.json.JsonOutput.prettyPrint(
                                     groovy.json.JsonOutput.toJson([
                                         check : 'VM Size Policy',
                                         policy: 'policies/vm_size.rego',
                                         status: 'SKIPPED',
-                                        reason: 'tfplan.json not produced (Terraform Plan failed)'
+                                        reason: 'outputs/tfplan.json not produced (Terraform Plan failed)'
                                     ])
                                 )
                                 return
                             }
                             def result = bat(
                                 script: """@echo off
-${env.OPA_EXE} eval -i tfplan.json -d policies/vm_size.rego -d env_config.json "data.policy.vm_size.deny" --format pretty""",
+${env.OPA_EXE} eval -i outputs/tfplan.json -d policies/vm_size.rego -d outputs/env_config.json "data.policy.vm_size.deny" --format pretty""",
                                 returnStdout: true
                             ).trim()
                             echo "--- VM Size Policy ---\n${result}"
                             def hasViolation = result.contains('VIOLATION')
                             def violationLines = result.split('\n').findAll { it.trim().contains('VIOLATION') }
-                            writeFile file: 'opa_vm_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                            writeFile file: 'outputs/opa_vm_result.json', text: groovy.json.JsonOutput.prettyPrint(
                                 groovy.json.JsonOutput.toJson([
                                     check      : 'VM Size Policy',
                                     policy     : 'policies/vm_size.rego',
@@ -114,7 +122,7 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/vm_size.rego -d env_config.json "
                                 ])
                             )
                             if (hasViolation) {
-                                unstable("OPA: VM Size Policy check failed — see opa_vm_result.json")
+                                unstable("OPA: VM Size Policy check failed — see outputs/opa_vm_result.json")
                             }
                         }
                     }
@@ -124,27 +132,27 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/vm_size.rego -d env_config.json "
                 stage('Mandatory Tags') {
                     steps {
                         script {
-                            if (!fileExists('tfplan.json')) {
-                                echo "Skipping Mandatory Tags — tfplan.json unavailable."
-                                writeFile file: 'opa_tags_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                            if (!fileExists('outputs/tfplan.json')) {
+                                echo "Skipping Mandatory Tags — outputs/tfplan.json unavailable."
+                                writeFile file: 'outputs/opa_tags_result.json', text: groovy.json.JsonOutput.prettyPrint(
                                     groovy.json.JsonOutput.toJson([
                                         check : 'Mandatory Tags',
                                         policy: 'policies/tags.rego',
                                         status: 'SKIPPED',
-                                        reason: 'tfplan.json not produced (Terraform Plan failed)'
+                                        reason: 'outputs/tfplan.json not produced (Terraform Plan failed)'
                                     ])
                                 )
                                 return
                             }
                             def result = bat(
                                 script: """@echo off
-${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny" --format pretty""",
+${env.OPA_EXE} eval -i outputs/tfplan.json -d policies/tags.rego "data.policy.tags.deny" --format pretty""",
                                 returnStdout: true
                             ).trim()
                             echo "--- Mandatory Tags ---\n${result}"
                             def hasViolation = result.contains('VIOLATION')
                             def violationLines = result.split('\n').findAll { it.trim().contains('VIOLATION') }
-                            writeFile file: 'opa_tags_result.json', text: groovy.json.JsonOutput.prettyPrint(
+                            writeFile file: 'outputs/opa_tags_result.json', text: groovy.json.JsonOutput.prettyPrint(
                                 groovy.json.JsonOutput.toJson([
                                     check      : 'Mandatory Tags',
                                     policy     : 'policies/tags.rego',
@@ -154,7 +162,7 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
                                 ])
                             )
                             if (hasViolation) {
-                                unstable("OPA: Mandatory Tags check failed — see opa_tags_result.json")
+                                unstable("OPA: Mandatory Tags check failed — see outputs/opa_tags_result.json")
                             }
                         }
                     }
@@ -185,7 +193,7 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
             echo "Pipeline complete — infrastructure deployed and fully compliant."
         }
         unstable {
-            echo "Pipeline unstable — security violations found. Infrastructure was NOT changed. Review findings.json and opa_*_result.json artifacts."
+            echo "Pipeline unstable — security violations found. Infrastructure was NOT changed. Review outputs/opa_*_result.json artifacts."
         }
         failure {
             echo "Pipeline failed — no infrastructure was changed. Review the failing stage above."
