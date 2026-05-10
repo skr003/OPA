@@ -10,8 +10,8 @@ A Cloud Security Posture Management (CSPM) framework for Microsoft Azure that en
 OPA-main/
 ├── Jenkinsfile.preventive         Jenkins pipeline — pre-deployment policy gate
 ├── Jenkinsfile.remediative        Jenkins pipeline — drift detection & auto-fix
-├── parse_findings.py              tfsec + Checkov JSON → blocking/warnings classifier
-├── generate_report.py             Consolidated security_report.json generator
+├── parse_findings.py              standalone: tfsec + Checkov JSON → blocking/warnings classifier (not called by pipelines)
+├── generate_report.py             standalone: consolidated security_report.json generator (not called by pipelines)
 ├── requirements.txt               Python dependencies
 │
 ├── policies/
@@ -44,13 +44,15 @@ OPA-main/
 
 | Check | Tool | CIS Rule | tfsec ID | Description |
 |-------|------|----------|----------|-------------|
-| Static Analysis | tfsec | 3.1 | AVD-AZU-0010 | HTTPS-only required |
-| Static Analysis | tfsec | 3.2 | AVD-AZU-0014 | Infrastructure encryption |
-| Static Analysis | tfsec | 3.6 | AVD-AZU-0012 | Public blob access disabled |
-| Static Analysis | tfsec | 3.7 | AVD-AZU-0011 | Network default action: Deny |
-| Static Analysis | tfsec | 3.10 | AVD-AZU-0013 | TLS 1.2 minimum |
-| Cost Governance | OPA | — | vm_size.rego | VM size within per-env allowlist |
-| Tag Governance | OPA | — | tags.rego | Environment, CostCenter, ManagedBy required |
+| Static Analysis | tfsec | 3.1 | AVD-AZU-0010 | HTTPS-only required (artifact only) |
+| Static Analysis | tfsec | 3.2 | AVD-AZU-0014 | Infrastructure encryption (artifact only) |
+| Static Analysis | tfsec | 3.6 | AVD-AZU-0012 | Public blob access disabled (artifact only) |
+| Static Analysis | tfsec | 3.7 | AVD-AZU-0011 | Network default action: Deny (artifact only) |
+| Static Analysis | tfsec | 3.10 | AVD-AZU-0013 | TLS 1.2 minimum (artifact only) |
+| Cost Governance | OPA | — | vm_size.rego | VM size within per-env allowlist — **blocks deployment** |
+| Tag Governance | OPA | — | tags.rego | Environment, CostCenter, ManagedBy required — **blocks deployment** |
+
+> tfsec and Checkov run in Layer A and write `tfsec_results.json` / `checkov_results.json` for review. Only OPA policy violations (VM size, mandatory tags) block the build and prevent `terraform apply`.
 
 ### Remediative Pipeline (Live Azure — post-deployment)
 
@@ -130,7 +132,7 @@ All tagged resources carry `Environment`, `CostCenter`, and `ManagedBy` as requi
 | `AZURE_CLIENT_ID` | Both | Service principal App ID |
 | `AZURE_CLIENT_SECRET` | Both | Service principal secret |
 | `AZURE_TENANT_ID` | Both | Azure AD tenant ID |
-| `TEAMS_WEBHOOK_URL` | Both | Teams incoming webhook URL |
+| `TEAMS_WEBHOOK_URL` | Remediative | Teams incoming webhook URL |
 
 The service principal requires **Reader** on the subscription (Resource Graph queries) and **Contributor** on remediated resources.
 
@@ -138,7 +140,7 @@ The service principal requires **Reader** on the subscription (Resource Graph qu
 
 ## Pipeline 1 — Preventive (`Jenkinsfile.preventive`)
 
-Runs on every pull request or push. Blocks non-compliant IaC before any resource reaches Azure.
+Runs on every pull request or push. OPA policy violations (VM size, mandatory tags) block `terraform apply`. tfsec and Checkov run in parallel and generate scan artifacts for review.
 
 ### Stages
 
@@ -147,13 +149,9 @@ Runs on every pull request or push. Blocks non-compliant IaC before any resource
 | **Checkout Code** | `checkout scm` | — |
 | **Terraform Init & Validate** | `terraform init` + `terraform validate` (catchError — UNSTABLE on failure) | — |
 | **Layer A: Static Analysis** | tfsec + Checkov in parallel | `tfsec_results.json`, `checkov_results.json` |
-| **Evaluate Security Findings** | `parse_findings.py` — CRITICAL/HIGH → `unstable()`, MEDIUM/LOW → advisory | `findings.json`, `blocking.txt`, `warnings.txt` |
 | **Terraform Plan generation** | `terraform plan` + `terraform show -json` (catchError — UNSTABLE on failure) | `tfplan.json`, `env_config.json` |
 | **Layer B: OPA Policy Validation** | VM Size + Mandatory Tags in parallel | `opa_vm_result.json`, `opa_tags_result.json` |
-| **Generate Security Report** | `generate_report.py` | `security_report.json` |
-| **Archive Security Report** | `archiveArtifacts` | All JSON files on build page |
 | **Terraform Apply (Deploy)** | `terraform apply` — only when `currentResult == SUCCESS` | Azure resources |
-| **Notify Teams** | Color-coded Teams card (GREEN/ORANGE/RED) | `teams_payload.json` |
 
 ### OPA Policies in Layer B
 
@@ -227,16 +225,12 @@ Required tags on all tracked resource types: `Environment`, `CostCenter`, `Manag
 
 | File | Created By | Contents |
 |------|-----------|---------|
-| `tfsec_results.json` | tfsec | Findings with AVD IDs, severity, file:line |
-| `checkov_results.json` | Checkov | Additional IaC findings |
-| `findings.json` | `parse_findings.py` | Combined summary with blocking/warnings split |
-| `blocking.txt` | `parse_findings.py` | CRITICAL/HIGH messages (pipeline fails if non-empty) |
-| `warnings.txt` | `parse_findings.py` | MEDIUM/LOW advisory messages |
+| `tfsec_results.json` | tfsec | Findings with AVD IDs, severity, file:line (advisory — review only) |
+| `checkov_results.json` | Checkov | Additional IaC findings (advisory — review only) |
 | `env_config.json` | Terraform Plan stage | `{"config":{"environment":"dev"}}` |
 | `tfplan.json` | Terraform | Full plan JSON — OPA vm_size + tags input |
-| `opa_vm_result.json` | OPA | VM Size Policy result |
-| `opa_tags_result.json` | OPA | Mandatory Tags result |
-| `security_report.json` | `generate_report.py` | One row per check: tool, check_id, severity, input, status, reason |
+| `opa_vm_result.json` | OPA | VM Size Policy result (PASSED / FAILED / SKIPPED) |
+| `opa_tags_result.json` | OPA | Mandatory Tags result (PASSED / FAILED / SKIPPED) |
 
 ### Remediative Pipeline
 

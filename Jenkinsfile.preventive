@@ -2,12 +2,11 @@ pipeline {
     agent any
 
     environment {
-        TFSEC_EXE         = '"C:/Program Files/tfsec/tfsec.exe"'
-        OPA_EXE           = '"C:/Program Files/OPA/opa.exe"'
-        TF_EXE            = '"C:/Program Files/terraform/terraform.exe"'
-        CHECKOV_EXE       = 'checkov'
-        TEAMS_WEBHOOK_URL = credentials('TEAMS_WEBHOOK_URL')
-        ENVIRONMENT       = 'dev'
+        TFSEC_EXE   = '"C:/Program Files/tfsec/tfsec.exe"'
+        OPA_EXE     = '"C:/Program Files/OPA/opa.exe"'
+        TF_EXE      = '"C:/Program Files/terraform/terraform.exe"'
+        CHECKOV_EXE = 'checkov'
+        ENVIRONMENT = 'dev'
     }
 
     stages {
@@ -54,32 +53,6 @@ pipeline {
                     steps {
                         bat(returnStatus: true,
                             script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > checkov_results.json 2>checkov_error.log")
-                    }
-                }
-            }
-        }
-
-        // -------------------------------------------------------------------
-        // SCENARIO 2 – Triage findings.
-        // CRITICAL/HIGH  → blocking → build marked UNSTABLE (not FAILURE),
-        //                  pipeline continues so all checks still run.
-        // MEDIUM/LOW     → advisory → captured in warnings.txt.
-        // All findings persisted to findings.json for archiving.
-        // -------------------------------------------------------------------
-        stage('Evaluate Security Findings') {
-            steps {
-                script {
-                    def exitCode = bat(returnStatus: true, script: 'python parse_findings.py')
-                    def warningText = readFile('warnings.txt').trim()
-                    env.HAS_WARNINGS = (warningText.length() > 0).toString()
-
-                    if (exitCode != 0) {
-                        def blockingText = readFile('blocking.txt').trim()
-                        echo "BLOCKING VIOLATIONS:\n${blockingText}"
-                        unstable("Static analysis: blocking violation(s) found — see findings.json")
-                    } else {
-                        def warnCount = warningText ? warningText.split('\n').length : 0
-                        echo "Static analysis passed. ${warnCount} advisory finding(s)."
                     }
                 }
             }
@@ -200,28 +173,6 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
         }
 
         // -------------------------------------------------------------------
-        // Consolidate all tool outputs into a single human-readable report.
-        // security_report.json has one row per check with:
-        //   tool | check_id | severity | input | status | reason
-        // -------------------------------------------------------------------
-        stage('Generate Security Report') {
-            steps {
-                bat(returnStatus: true, script: 'python generate_report.py')
-            }
-        }
-
-        // -------------------------------------------------------------------
-        // Archive every JSON artifact so they appear on the Jenkins build
-        // page regardless of build outcome.
-        // -------------------------------------------------------------------
-        stage('Archive Security Report') {
-            steps {
-                archiveArtifacts artifacts: 'security_report.json, findings.json, tfsec_results.json, checkov_results.json, opa_vm_result.json, opa_tags_result.json',
-                                 allowEmptyArchive: true
-            }
-        }
-
-        // -------------------------------------------------------------------
         // SCENARIO 1 – Terraform Apply.
         // Only runs when every prior stage passed (build result == SUCCESS).
         // Any unstable() call above will cause this stage to be skipped,
@@ -234,56 +185,6 @@ ${env.OPA_EXE} eval -i tfplan.json -d policies/tags.rego "data.policy.tags.deny"
             steps {
                 dir('terraform') {
                     bat "${env.TF_EXE} apply -auto-approve -input=false tfplan"
-                }
-            }
-        }
-
-        // -------------------------------------------------------------------
-        // SCENARIO 5 – Teams notification.
-        // Always runs. Color-codes the card by build result:
-        //   GREEN   = all checks passed, infrastructure deployed
-        //   ORANGE  = violations found, infrastructure NOT changed
-        //   RED     = pipeline error (Terraform or tool failure)
-        // -------------------------------------------------------------------
-        stage('Notify Teams') {
-            steps {
-                script {
-                    def buildResult  = currentBuild.currentResult
-                    def blockingText = fileExists('blocking.txt') ? readFile('blocking.txt').trim() : ''
-                    def warningText  = fileExists('warnings.txt') ? readFile('warnings.txt').trim() : ''
-
-                    def themeColor  = (buildResult == 'SUCCESS')  ? '00CC44' :
-                                      (buildResult == 'UNSTABLE') ? 'FFA500' : 'CC0000'
-                    def statusLabel = (buildResult == 'SUCCESS')  ? 'PASSED — infrastructure deployed' :
-                                      (buildResult == 'UNSTABLE') ? 'UNSTABLE — violations found, no changes applied' :
-                                                                    'FAILED — review pipeline logs'
-
-                    def bodyParts = []
-                    if (blockingText) {
-                        bodyParts << '<b>Blocking Violations (CRITICAL/HIGH):</b><br>' + blockingText.replace('\n', '<br>')
-                    }
-                    if (warningText) {
-                        bodyParts << '<b>Advisory Warnings (MEDIUM/LOW):</b><br>' + warningText.replace('\n', '<br>')
-                    }
-                    if (!bodyParts) {
-                        bodyParts << 'All security checks passed. No findings.'
-                    }
-
-                    def payload = groovy.json.JsonOutput.toJson([
-                        "@type"     : "MessageCard",
-                        "@context"  : "http://schema.org/extensions",
-                        "themeColor": themeColor,
-                        "summary"   : "${statusLabel} — ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                        "sections"  : [[
-                            "activityTitle"   : "${statusLabel}",
-                            "activitySubtitle": "${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                            "activityText"    : bodyParts.join('<br><br>'),
-                            "markdown"        : true
-                        ]]
-                    ])
-                    writeFile file: 'teams_payload.json', text: payload
-                    bat(returnStatus: true,
-                        script: 'curl -s -X POST -H "Content-Type: application/json" -d @teams_payload.json %TEAMS_WEBHOOK_URL%')
                 }
             }
         }

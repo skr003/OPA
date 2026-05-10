@@ -5,14 +5,14 @@
 ## Pipeline 1 — Preventive Controls
 
 **Trigger:** Pull request or push to a protected branch  
-**Goal:** Five layered gates that enforce security, cost, and governance policy before any resource reaches Azure
+**Goal:** OPA enforces cost and tag governance before deployment; tfsec and Checkov generate static analysis artifacts for review
 
 ```
 Developer pushes Terraform code
           │
           ▼
 ┌──────────────────────────┐
-│  Stage 1: Checkout       │
+│  Stage 1: Checkout Code  │
 │  Pull code from SCM      │
 └──────────┬───────────────┘
            │
@@ -29,7 +29,7 @@ Developer pushes Terraform code
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Stage 3: Layer A — Static Analysis  [SCENARIO 2]           │
+│  Stage 3: Layer A — Static Analysis (Checkov / tfsec)        │
 │  tfsec and Checkov run in PARALLEL                          │
 │                                                             │
 │  ┌──────────────────────────┐  ┌──────────────────────────┐ │
@@ -38,52 +38,33 @@ Developer pushes Terraform code
 │  │   --include-passed       │  │   --soft-fail            │ │
 │  │ > tfsec_results.json     │  │ > checkov_results.json   │ │
 │  └──────────────────────────┘  └──────────────────────────┘ │
-└─────────────────────────────────────────┬───────────────────┘
-                                          │
-                                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 4: Evaluate Security Findings  [SCENARIO 2]                   │
-│                                                                     │
-│  python parse_findings.py                                           │
-│  Reads: tfsec_results.json + checkov_results.json                   │
-│  Writes: findings.json, blocking.txt, warnings.txt                  │
-│                                                                     │
-│    CRITICAL / HIGH  ──→  blocking[]     MEDIUM / LOW  ──→  warnings[]│
-│                                                                     │
-└──────────┬────────────────────────────────────────┬────────────────┘
-           │  blocking = []                         │  blocking has entries
-           │                                        ▼
-           │                         ┌──────────────────────────────┐
-           │                         │  BUILD MARKED UNSTABLE       │
-           │                         │  [SCENARIO 2]                │
-           │                         │                              │
-           │                         │  rule ID | severity          │
-           │                         │  description                 │
-           │                         │  filename : line number      │
-           │                         │  Terraform Apply blocked.    │
-           │                         └──────────────────────────────┘
-           ▼
+│                                                             │
+│  Findings written as artifacts for review only.             │
+│  Neither tool blocks or marks the build here.               │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Stage 5: Terraform Plan                                    │
+│  Stage 4: Terraform Plan generation                         │
 │                                                             │
 │  Writes env_config.json:                                    │
 │    {"config": {"environment": "dev|staging|prod"}}          │
 │                                                             │
-│  terraform init -upgrade                                    │
-│  terraform plan -out=tfplan                                 │
+│  terraform plan -out=tfplan -input=false                    │
 │  terraform show -json tfplan > tfplan.json                  │
 │                                                             │
-│  tfplan.json is the input for the OPA cost + tags checks    │
-│  Wrapped in catchError — OPA runs even if Azure creds absent│
+│  tfplan.json is the input for OPA cost + tags checks        │
+│  Wrapped in catchError — OPA still runs if Azure creds      │
+│  are absent (tfplan.json guard skips the OPA sub-stages)    │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 6: Layer B — OPA Policy Validation  [SCENARIOS 3, 4]          │
+│  Stage 5: Layer B — OPA Policy Validation                            │
 │  Two checks run in PARALLEL                                         │
 │                                                                     │
 │  ┌────────────────────────────────┐  ┌────────────────────────────┐  │
-│  │ VM Size Policy [Scenario 3]    │  │ Mandatory Tags [Scenario 4]│  │
+│  │ VM Size Policy                 │  │ Mandatory Tags             │  │
 │  │                                │  │                            │  │
 │  │ -i tfplan.json                 │  │ -i tfplan.json             │  │
 │  │ -d policies/vm_size.rego       │  │ -d policies/tags.rego      │  │
@@ -93,74 +74,35 @@ Developer pushes Terraform code
 │  │                                │  │ Checks Environment,        │  │
 │  │ Checks VM size vs              │  │ CostCenter, ManagedBy      │  │
 │  │ per-env allowlist              │  │ on all taggable resources  │  │
+│  │ Writes: opa_vm_result.json     │  │ Writes: opa_tags_result.json│ │
 │  └──────────────┬─────────────────┘  └────────────────┬───────────┘  │
 └─────────────────┼──────────────────────────────────────┼─────────────┘
                   │  any deny set contains "VIOLATION"   │
                   ▼                                      ▼
    ┌──────────────────────────────┐  ┌────────────────────────────────┐
-   │ OPA COST FAIL [Scenario 3]   │  │ OPA TAGS FAIL [Scenario 4]     │
+   │ OPA COST FAIL                │  │ OPA TAGS FAIL                  │
    │                              │  │                                │
    │ VM size not on allowed list  │  │ Missing mandatory tag:         │
    │ for this environment.        │  │ Environment, CostCenter, or    │
-   │ Deployment blocked.          │  │ ManagedBy. Deployment blocked. │
+   │ Build marked UNSTABLE.       │  │ ManagedBy.                     │
+   │ Deployment blocked.          │  │ Build marked UNSTABLE. Blocked.│
    └──────────────────────────────┘  └────────────────────────────────┘
 
            │  all deny sets empty
            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Stage 7: Generate Security Report                          │
-│                                                             │
-│  python generate_report.py                                  │
-│  Consolidates all tool outputs into security_report.json    │
-│  One row per check: tool, check_id, severity, status, reason│
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Stage 8: Archive Security Report                           │
-│                                                             │
-│  archiveArtifacts:                                          │
-│    security_report.json  findings.json                      │
-│    tfsec_results.json    checkov_results.json               │
-│    opa_vm_result.json    opa_tags_result.json               │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Stage 9: Terraform Apply  [SCENARIO 1 complete]            │
+│  Stage 6: Terraform Apply (Deploy)                          │
 │                                                             │
 │  when { currentBuild.currentResult == 'SUCCESS' }           │
-│  terraform apply -auto-approve tfplan                       │
+│  terraform apply -auto-approve -input=false tfplan          │
 │                                                             │
 │  Reuses the pre-validated plan — no drift possible          │
 │  between the policy check and the apply.                    │
 │  Skipped automatically if any unstable() was called above.  │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 10: Notify Teams  [SCENARIO 5]                               │
-│  Always runs regardless of build result.                            │
-│                                                                     │
-│  Reads blocking.txt + warnings.txt → builds Teams MessageCard       │
-│  curl POST → TEAMS_WEBHOOK_URL                                      │
-│                                                                     │
-│  GREEN  (SUCCESS)  = all checks passed, infrastructure deployed     │
-│  ORANGE (UNSTABLE) = violations found, infrastructure NOT changed   │
-│  RED    (FAILURE)  = pipeline error                                 │
-└─────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Severity Routing (Stage 4)
-
-| Severity | Source | Outcome |
-|----------|--------|---------|
-| CRITICAL | tfsec or Checkov | Marks build UNSTABLE — `rule_id \| description \| file:line` printed, Terraform Apply skipped |
-| HIGH | tfsec or Checkov | Marks build UNSTABLE — `rule_id \| description \| file:line` printed, Terraform Apply skipped |
-| MEDIUM | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Teams advisory |
-| LOW | tfsec or Checkov | Non-blocking — queued in `warnings.txt` for Teams advisory |
-
-### OPA VM Size Allowlist (Stage 6 — VM Size Policy)
+### OPA VM Size Allowlist (Stage 5 — VM Size Policy)
 
 | Environment | Permitted sizes |
 |-------------|----------------|
@@ -168,7 +110,7 @@ Developer pushes Terraform code
 | `staging` | B2s, B4ms, D2s_v3, D4s_v3, D8s_v3 |
 | `prod` | D2–D16s_v3, E4–E16s_v3 |
 
-> **Note:** CIS Azure Benchmark checks (`policies/cis_azure.rego`) run in the **Remediative Pipeline** against a fresh tfsec scan of the live IaC checkout — not in the Preventive Pipeline's Layer B.
+> **Note:** CIS Azure Benchmark checks (`policies/cis_azure.rego`) run in the **Remediative Pipeline** against a fresh tfsec scan of the checked-out Terraform. tfsec and Checkov findings from Layer A are artifacts for review and do not block this pipeline.
 
 ---
 
@@ -323,7 +265,7 @@ Scheduled / Manual Trigger
 │    → outputs/compliance_dashboard_post_remediation.json              │
 │  Archives: compliance_dashboard_post_remediation.json                │
 │                                                                      │
-│  -- Scenario 5: Teams Notification --                                │
+│  -- Teams Notification --                                            │
 │  Builds MessageCard with all 4 scenario outcomes                     │
 │  curl POST → TEAMS_WEBHOOK_URL                                       │
 │  GREEN  (SUCCESS)  = all drift remediated                            │
@@ -394,16 +336,15 @@ TEAMS_WEBHOOK_URL
                                   │
                     ┌─────────────▼────────────────────────────┐
                     │  Preventive Pipeline                      │
-                    │  tfsec + Checkov → severity gate          │
+                    │  tfsec + Checkov → scan artifacts         │
                     │  Terraform plan → OPA (cost, tags)        │
                     └──────┬─────────────────────┬─────────────┘
                     Passes │                     │ Fails (UNSTABLE)
                            │                     │
               ┌────────────▼──┐       ┌──────────▼─────────────┐
               │  Terraform    │       │  Deployment blocked     │
-              │  Apply +      │       │  Scenario 2: security  │
-              │  Teams notify │       │  Scenario 3: VM cost   │
-              │  if warnings  │       │  Scenario 4: tags      │
+              │  Apply        │       │  OPA: VM size cost     │
+              │               │       │  OPA: mandatory tags   │
               └────────┬──────┘       └────────────────────────┘
                        │
               ┌────────▼──────────────────────────────┐
@@ -438,13 +379,10 @@ TEAMS_WEBHOOK_URL
 | Stage | Pipeline | Files Read | Files Written |
 |-------|----------|------------|---------------|
 | Layer A — Static Analysis | Preventive | `terraform/*.tf` | `tfsec_results.json`, `checkov_results.json` |
-| Evaluate Findings | Preventive | `tfsec_results.json`, `checkov_results.json` | `findings.json`, `blocking.txt`, `warnings.txt` |
-| Terraform Plan | Preventive | `terraform/*.tf` | `env_config.json`, `tfplan.json` |
+| Terraform Plan generation | Preventive | `terraform/*.tf` | `env_config.json`, `tfplan.json` |
 | OPA — VM Size | Preventive | `tfplan.json`, `policies/vm_size.rego`, `env_config.json` | `opa_vm_result.json` |
 | OPA — Tags | Preventive | `tfplan.json`, `policies/tags.rego` | `opa_tags_result.json` |
-| Generate Report | Preventive | `tfsec_results.json`, `checkov_results.json`, `opa_*_result.json` | `security_report.json` |
 | Terraform Apply | Preventive | `terraform/tfplan` | Azure resources |
-| Notify Teams | Preventive | `blocking.txt`, `warnings.txt` | `teams_payload.json` |
 | Checkout Code | Remediative | — | `outputs/` directory (cleaned) |
 | Environment Setup | Remediative | — | Azure auth session |
 | Query ARG | Remediative | Azure live state | `outputs/*_raw.json` |
