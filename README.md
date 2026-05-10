@@ -140,7 +140,7 @@ The service principal requires **Reader** on the subscription (Resource Graph qu
 
 ## Pipeline 1 — Preventive (`Jenkinsfile.preventive`)
 
-Runs on every pull request or push. OPA policy violations (VM size, mandatory tags) block `terraform apply`. tfsec and Checkov run in parallel and generate scan artifacts for review.
+Runs on every pull request or push. OPA policy violations (VM size, mandatory tags) block `terraform apply`. tfsec then Checkov run sequentially, both with `returnStatus: true`, and generate scan artifacts for review.
 
 ### Stages
 
@@ -148,7 +148,7 @@ Runs on every pull request or push. OPA policy violations (VM size, mandatory ta
 |-------|-----------|--------|
 | **Checkout Code** | `checkout scm` | — |
 | **Terraform Init & Validate** | `terraform init` + `terraform validate` (catchError — UNSTABLE on failure) | — |
-| **Layer A: Static Analysis** | tfsec + Checkov in parallel | `tfsec_results.json`, `checkov_results.json` |
+| **Layer A: Static Analysis** | tfsec then Checkov (sequential, both non-blocking) | `tfsec_results.json`, `tfsec_error.log`, `checkov_results.json`, `checkov_error.log` |
 | **Terraform Plan generation** | `terraform plan` + `terraform show -json` (catchError — UNSTABLE on failure) | `tfplan.json`, `env_config.json` |
 | **Layer B: OPA Policy Validation** | VM Size + Mandatory Tags in parallel | `opa_vm_result.json`, `opa_tags_result.json` |
 | **Terraform Apply (Deploy)** | `terraform apply` — only when `currentResult == SUCCESS` | Azure resources |
@@ -226,7 +226,9 @@ Required tags on all tracked resource types: `Environment`, `CostCenter`, `Manag
 | File | Created By | Contents |
 |------|-----------|---------|
 | `tfsec_results.json` | tfsec | Findings with AVD IDs, severity, file:line (advisory — review only) |
-| `checkov_results.json` | Checkov | Additional IaC findings (advisory — review only) |
+| `tfsec_error.log` | tfsec | stderr from tfsec run (deprecation notices, errors) |
+| `checkov_results.json` | Checkov | Additional IaC findings written via `--output-file` (advisory — review only) |
+| `checkov_error.log` | Checkov | stderr from Checkov run (warnings, errors) |
 | `env_config.json` | Terraform Plan stage | `{"config":{"environment":"dev"}}` |
 | `tfplan.json` | Terraform | Full plan JSON — OPA vm_size + tags input |
 | `opa_vm_result.json` | OPA | VM Size Policy result (PASSED / FAILED / SKIPPED) |

@@ -30,14 +30,16 @@ Developer pushes Terraform code
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Stage 3: Layer A — Static Analysis (Checkov / tfsec)        │
-│  tfsec and Checkov run in PARALLEL                          │
+│  tfsec then Checkov run sequentially (returnStatus: true)   │
 │                                                             │
-│  ┌──────────────────────────┐  ┌──────────────────────────┐ │
-│  │ tfsec terraform          │  │ checkov -d terraform     │ │
-│  │   --format json          │  │   --output json          │ │
-│  │   --include-passed       │  │   --soft-fail            │ │
-│  │ > tfsec_results.json     │  │ > checkov_results.json   │ │
-│  └──────────────────────────┘  └──────────────────────────┘ │
+│  tfsec terraform                                            │
+│    --format json --include-passed                           │
+│    1>tfsec_results.json 2>tfsec_error.log                   │
+│                                                             │
+│  checkov -d terraform                                       │
+│    --output json                                            │
+│    --output-file checkov_results.json                       │
+│    --soft-fail 2>checkov_error.log                          │
 │                                                             │
 │  Findings written as artifacts for review only.             │
 │  Neither tool blocks or marks the build here.               │
