@@ -52,7 +52,7 @@ pipeline {
             steps {
                 bat "${env.TFSEC_EXE} terraform --format json --include-passed > outputs/tfsec_results.json"
                 bat(returnStatus: true,
-                    script: "${env.CHECKOV_EXE} -d terraform --output json --soft-fail > outputs/checkov_results.json 2>outputs/checkov_error.log")
+                    script: "${env.CHECKOV_EXE} -d terraform --output json --output-file outputs/checkov_results.json --soft-fail 2>outputs/checkov_error.log")
             }
         }
 
