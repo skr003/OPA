@@ -7,7 +7,7 @@ pipeline {
         AZURE_CLIENT_SECRET = credentials('AZURE_CLIENT_SECRET')
         AZURE_TENANT_ID     = credentials('AZURE_TENANT_ID')
         TEAMS_WEBHOOK_URL   = credentials('TEAMS_WEBHOOK_URL')
-        PYTHON_EXE          = 'C:/Program Files/python.exe'
+        PYTHON_EXE          = 'C:\Users\admin\AppData\Local\Programs\Python\Python312\python.exe'
         TFSEC_EXE           = '"C:/Program Files/tfsec/tfsec.exe"'
         OPA_EXE             = '"C:/Program Files/OPA/opa.exe"'
     }
