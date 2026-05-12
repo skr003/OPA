@@ -63,7 +63,7 @@ pipeline {
         // ---------------------------------------------------------------
         stage('Query Azure Resource Graph') {
             steps {
-                bat '"%PYTHON_EXE%" scripts/query_azure.py'
+                bat '"C:/Users/admin/AppData/Local/Programs/Python/Python312/python.exe" scripts/query_azure.py'
                 archiveArtifacts artifacts: 'outputs/*_raw.json',
                                  allowEmptyArchive: true
             }
