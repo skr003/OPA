@@ -44,12 +44,9 @@ pipeline {
                 echo ========================================
                 echo  JSON artifacts found in outputs/
                 echo ========================================
-<<<<<<< HEAD
                 pwd
                 dir /b outputs\\*.json 2>nul || echo (no JSON files found — dashboard will show placeholders)
-=======
                 dir /b "C:/ProgramData/Jenkins/.jenkins/workspace/Bharath_C1_Pipeline1/outputs\\*.json 2>nul || echo (no JSON files found — dashboard will show placeholders)
->>>>>>> acbf73afa2ed0bd3d857bd3705567bf18922af68
                 echo ========================================
                 '''
             }
