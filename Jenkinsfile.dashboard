@@ -90,31 +90,37 @@ pipeline {
         }
 
         // -----------------------------------------------------------------------
-        // Publish dashboard/dist/ via the HTML Publisher plugin.
-        // The entry point is index.html produced by the Vite build.
-        // Requires: HTML Publisher Plugin (Manage Plugins → install if missing).
+        // Try to publish via HTML Publisher plugin (sidebar link).
+        // If the plugin is not installed the catchError keeps the build GREEN
+        // and the archive step below still saves the dist/ folder.
+        // To install: Manage Jenkins → Plugins → search "HTML Publisher".
         // -----------------------------------------------------------------------
         stage('Publish Dashboard') {
             steps {
-                publishHTML(target: [
-                    reportName           : 'Dashboard UI',
-                    reportDir            : 'dashboard/dist',
-                    reportFiles          : 'index.html',
-                    keepAll              : true,
-                    alwaysLinkToLastBuild: true,
-                    allowMissing         : false
-                ])
-                echo "[Dashboard] Published — click 'Dashboard UI' in the build sidebar."
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    publishHTML(target: [
+                        reportName           : 'Dashboard UI',
+                        reportDir            : 'dashboard/dist',
+                        reportFiles          : 'index.html',
+                        keepAll              : true,
+                        alwaysLinkToLastBuild: true,
+                        allowMissing         : false
+                    ])
+                }
+                echo "[Dashboard] Build complete — dashboard/dist/index.html is ready."
             }
         }
 
         // -----------------------------------------------------------------------
-        // Archive the built dist/ folder and the collected JSON files.
+        // Archive the full dist/ folder so the dashboard is always accessible
+        // via Build Artifacts → dashboard/dist/index.html, even without the
+        // HTML Publisher plugin.
         // -----------------------------------------------------------------------
         stage('Archive Artifacts') {
             steps {
                 archiveArtifacts artifacts: 'dashboard/dist/**,dashboard/public/outputs/*.json',
                                  allowEmptyArchive: true
+                echo "[Archive] Open: Build Artifacts → dashboard/dist/index.html"
             }
         }
     }
