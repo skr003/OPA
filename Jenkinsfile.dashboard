@@ -44,19 +44,25 @@ pipeline {
             steps {
                 bat '''
                 @echo off
-                set SRC=C:\\ProgramData\\Jenkins\\.jenkins\\workspace\\Bharath_C1_Pipeline1\\outputs
                 set DST=%CD%\\outputs
 
-                if not exist "%SRC%" (
-                    echo [Collect] Source folder not found: %SRC%
-                    echo [Collect] Skipping copy — dashboard will render placeholders.
-                    goto :done
+                set SRC1=C:\\ProgramData\\Jenkins\\.jenkins\\workspace\\Bharath_C1_Pipeline1\\outputs
+                if exist "%SRC1%" (
+                    echo [Collect] Copying from Pipeline1: %SRC1%
+                    xcopy /Y /D "%SRC1%\\*.json" "%DST%\\" 2>nul
+                ) else (
+                    echo [Collect] Pipeline1 outputs not found: %SRC1% -- skipping.
                 )
 
-                echo [Collect] Copying JSON files from %SRC% to %DST% ...
-                xcopy /Y /D "%SRC%\\*.json" "%DST%\\" 2>nul
+                set SRC2=C:\\ProgramData\\Jenkins\\.jenkins\\workspace\\Bharath_C1_Pipeline2\\outputs
+                if exist "%SRC2%" (
+                    echo [Collect] Copying from Pipeline2: %SRC2%
+                    xcopy /Y /D "%SRC2%\\*.json" "%DST%\\" 2>nul
+                ) else (
+                    echo [Collect] Pipeline2 outputs not found: %SRC2% -- skipping.
+                )
+
                 echo [Collect] Done.
-                :done
                 '''
             }
         }
