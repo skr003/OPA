@@ -4,7 +4,8 @@
 // dashboard (outputs/dashboard.html) with interactive charts and tables.
 //
 // Run this pipeline AFTER Jenkinsfile.preventive and/or Jenkinsfile.remediative
-// have executed, or configure it as a downstream job triggered by either.
+// have produced JSON files in the shared workspace, or point this pipeline at
+// the same Jenkins workspace via a shared agent label / persistent workspace.
 // =============================================================================
 
 pipeline {
@@ -17,9 +18,9 @@ pipeline {
     stages {
 
         // -----------------------------------------------------------------------
-        // Pull the latest pipeline code so the generate_ui.py script is current.
-        // If outputs/ already contains artifacts from a previous pipeline run we
-        // leave them in place — this stage only removes the old dashboard.html.
+        // Pull the latest pipeline code so generate_ui.py is always current.
+        // JSON outputs from the preventive / remediative pipelines are left
+        // intact; only a stale dashboard.html is removed.
         // -----------------------------------------------------------------------
         stage('Checkout & Prepare') {
             steps {
@@ -34,32 +35,6 @@ pipeline {
         }
 
         // -----------------------------------------------------------------------
-        // Copy artifacts from upstream builds if this pipeline is triggered as a
-        // downstream job. Both copyArtifacts calls use optional:true so the stage
-        // succeeds even when an upstream job has never run or does not exist.
-        // Remove or comment this stage when running from a shared workspace that
-        // already contains the JSON outputs (e.g. same job as preventive/remediative).
-        // -----------------------------------------------------------------------
-        stage('Collect Artifacts') {
-            steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                    copyArtifacts(
-                        projectName : 'CSPM-Preventive',
-                        filter      : 'outputs/**/*.json',
-                        optional    : true,
-                        flatten     : false
-                    )
-                    copyArtifacts(
-                        projectName : 'CSPM-Remediative',
-                        filter      : 'outputs/**/*.json',
-                        optional    : true,
-                        flatten     : false
-                    )
-                }
-            }
-        }
-
-        // -----------------------------------------------------------------------
         // List whatever JSON files are present so the build log is transparent.
         // -----------------------------------------------------------------------
         stage('Inspect Outputs') {
@@ -67,20 +42,19 @@ pipeline {
                 bat '''
                 @echo off
                 echo ========================================
-                echo  JSON artifacts in outputs/
+                echo  JSON artifacts found in outputs/
                 echo ========================================
-                dir /b outputs\\*.json 2>nul || echo (no JSON files found)
+                dir /b outputs\\*.json 2>nul || echo (no JSON files found — dashboard will show placeholders)
                 echo ========================================
                 '''
             }
         }
 
         // -----------------------------------------------------------------------
-        // Run generate_ui.py.  The script reads every supported JSON file from
-        // outputs/ and writes a single self-contained HTML file that includes
-        // Chart.js charts and filterable tables — no server required.
-        //
-        // Output: outputs/dashboard.html
+        // Run generate_ui.py. Reads every supported JSON from outputs/ and
+        // writes outputs/dashboard.html — a fully self-contained file with
+        // Chart.js charts and filterable tables.  Missing JSON files are
+        // handled gracefully by the script (sections show placeholder text).
         // -----------------------------------------------------------------------
         stage('Generate HTML Dashboard') {
             steps {
@@ -90,24 +64,25 @@ pipeline {
 
         // -----------------------------------------------------------------------
         // Publish via the Jenkins HTML Publisher plugin so the dashboard is
-        // accessible directly from the build page under "Dashboard UI".
+        // accessible directly from the build page sidebar.
+        // Requires: HTML Publisher Plugin (manage plugins → install if missing).
         // -----------------------------------------------------------------------
         stage('Publish Dashboard') {
             steps {
                 publishHTML(target: [
-                    reportName          : 'Dashboard UI',
-                    reportDir           : 'outputs',
-                    reportFiles         : 'dashboard.html',
-                    keepAll             : true,
+                    reportName           : 'Dashboard UI',
+                    reportDir            : 'outputs',
+                    reportFiles          : 'dashboard.html',
+                    keepAll              : true,
                     alwaysLinkToLastBuild: true,
-                    allowMissing        : false
+                    allowMissing         : false
                 ])
                 echo "[Dashboard] Published — click 'Dashboard UI' in the build sidebar to view."
             }
         }
 
         // -----------------------------------------------------------------------
-        // Archive both the HTML and the source JSON files for audit trails.
+        // Archive the HTML and all source JSON files for audit trails.
         // -----------------------------------------------------------------------
         stage('Archive Artifacts') {
             steps {
@@ -122,10 +97,10 @@ pipeline {
             echo "Dashboard generated successfully. Open 'Dashboard UI' in the build sidebar."
         }
         unstable {
-            echo "Dashboard generated but some upstream artifacts were missing — some sections may show placeholder data."
+            echo "Dashboard generated with warnings. Review the stage logs above."
         }
         failure {
-            echo "Dashboard generation failed. Check that Python is installed at %PYTHON_EXE% and scripts/generate_ui.py is present."
+            echo "Dashboard generation failed. Verify Python is at %PYTHON_EXE% and scripts/generate_ui.py exists."
         }
         always {
             echo "Artifact: outputs/dashboard.html"
