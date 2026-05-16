@@ -44,6 +44,7 @@ pipeline {
                 echo ========================================
                 echo  JSON artifacts found in outputs/
                 echo ========================================
+                pwd
                 dir /b outputs\\*.json 2>nul || echo (no JSON files found — dashboard will show placeholders)
                 echo ========================================
                 '''
