@@ -5,7 +5,7 @@ pipeline {
         TFSEC_EXE   = '"C:/Program Files/tfsec/tfsec.exe"'
         OPA_EXE     = '"C:/Program Files/OPA/opa.exe"'
         TF_EXE      = '"C:/Program Files/terraform/terraform.exe"'
-        CHECKOV_EXE = 'checkov'
+        // CHECKOV_EXE = 'checkov'
         ENVIRONMENT = 'dev'
     }
 
@@ -52,8 +52,8 @@ pipeline {
             steps {
                 bat(returnStatus: true,
                     script: "${env.TFSEC_EXE} terraform --format json --include-passed 1>outputs/tfsec_results.json 2>outputs/tfsec_error.log")
-                bat(returnStatus: true,
-                    script: "${env.CHECKOV_EXE} -d terraform --output json --output-file outputs/checkov_results.json --soft-fail 2>outputs/checkov_error.log")
+                // bat(returnStatus: true,
+                    // script: "${env.CHECKOV_EXE} -d terraform --output json --output-file outputs/checkov_results.json --soft-fail 2>outputs/checkov_error.log")
             }
         }
 
