@@ -90,6 +90,23 @@ pipeline {
         }
 
         // -----------------------------------------------------------------------
+        // Relax Jenkins' default CSP so the React app's JS/CSS loads correctly
+        // when served from Build Artifacts. Without this every artifact page
+        // blocks all scripts and the dashboard renders blank.
+        // -----------------------------------------------------------------------
+        stage('Relax CSP') {
+            steps {
+                script {
+                    System.setProperty(
+                        'hudson.model.DirectoryBrowserSupport.CSP',
+                        "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;"
+                    )
+                    echo "[CSP] Content-Security-Policy relaxed for artifact serving."
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
         // Try to publish via HTML Publisher plugin (sidebar link).
         // If the plugin is not installed the catchError keeps the build GREEN
         // and the archive step below still saves the dist/ folder.
