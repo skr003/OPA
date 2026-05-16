@@ -1,50 +1,34 @@
 // =============================================================================
 // CSPM Dashboard Pipeline
-// Reads every JSON artifact in outputs/ and generates a self-contained HTML
-// dashboard (outputs/dashboard.html) with interactive charts and tables.
-//
-// Run this pipeline AFTER Jenkinsfile.preventive and/or Jenkinsfile.remediative
-// have produced JSON files in the shared workspace, or point this pipeline at
-// the same Jenkins workspace via a shared agent label / persistent workspace.
+// Copies JSON artifacts from Pipeline1 / Pipeline2 into dashboard/public/outputs/,
+// builds the Vite + React app in dashboard/, then publishes dashboard/dist/ via
+// the Jenkins HTML Publisher plugin.
 // =============================================================================
 
 pipeline {
     agent any
 
-    environment {
-        PYTHON_EXE = 'C:/Users/admin/AppData/Local/Programs/Python/Python312/python.exe'
-    }
-
     stages {
 
         // -----------------------------------------------------------------------
-        // Pull the latest pipeline code so generate_ui.py is always current.
-        // JSON outputs from the preventive / remediative pipelines are left
-        // intact; only a stale dashboard.html is removed.
+        // Check out the latest source so the React app code is always current.
         // -----------------------------------------------------------------------
-        stage('Checkout & Prepare') {
+        stage('Checkout') {
             steps {
                 checkout scm
-                bat '''
-                @echo off
-                if not exist outputs mkdir outputs
-                del /f /q outputs\\dashboard.html 2>nul
-                echo [Dashboard] Workspace ready.
-                '''
             }
         }
 
         // -----------------------------------------------------------------------
-        // Copy JSON artifacts produced by the preventive / remediative pipelines
-        // from their shared Jenkins workspace into this pipeline's outputs/ folder.
-        // xcopy /Y overwrites existing files silently; /D skips files that are
-        // older than the destination so stale copies are never used.
+        // Copy JSON artifacts from both upstream pipeline workspaces into
+        // dashboard/public/outputs/ so the React app can fetch them at runtime.
         // -----------------------------------------------------------------------
-        stage('Collect Outputs') {
+        stage('Collect JSON Outputs') {
             steps {
                 bat '''
                 @echo off
-                set DST=%CD%\\outputs
+                set DST=%CD%\\dashboard\\public\\outputs
+                if not exist "%DST%" mkdir "%DST%"
 
                 set SRC1=C:\\ProgramData\\Jenkins\\.jenkins\\workspace\\Bharath_C1_Pipeline1\\outputs
                 if exist "%SRC1%" (
@@ -62,64 +46,60 @@ pipeline {
                     echo [Collect] Pipeline2 outputs not found: %SRC2% -- skipping.
                 )
 
-                echo [Collect] Done.
+                echo [Collect] JSON files staged in %DST%:
+                dir /b "%DST%\\*.json" 2>nul || echo (none found)
                 '''
             }
         }
 
         // -----------------------------------------------------------------------
-        // List whatever JSON files are present so the build log is transparent.
+        // Install npm dependencies inside the dashboard folder.
+        // node_modules is not committed, so this must run every build.
         // -----------------------------------------------------------------------
-        stage('Inspect Outputs') {
+        stage('Install Dependencies') {
             steps {
-                bat '''
-                @echo off
-                echo ========================================
-                echo  JSON artifacts found in outputs/
-                echo ========================================
-                dir /b outputs\\*.json 2>nul || echo (no JSON files found)
-                echo ========================================
-                '''
+                dir('dashboard') {
+                    bat 'npm install'
+                }
             }
         }
 
         // -----------------------------------------------------------------------
-        // Run generate_ui.py. Reads every supported JSON from outputs/ and
-        // writes outputs/dashboard.html — a fully self-contained file with
-        // Chart.js charts and filterable tables.  Missing JSON files are
-        // handled gracefully by the script (sections show placeholder text).
+        // Build the production bundle. Vite writes the output to dashboard/dist/.
         // -----------------------------------------------------------------------
-        stage('Generate HTML Dashboard') {
+        stage('Build React App') {
             steps {
-                bat '"%PYTHON_EXE%" scripts/generate_ui.py'
+                dir('dashboard') {
+                    bat 'npm run build'
+                }
             }
         }
 
         // -----------------------------------------------------------------------
-        // Publish via the Jenkins HTML Publisher plugin so the dashboard is
-        // accessible directly from the build page sidebar.
-        // Requires: HTML Publisher Plugin (manage plugins → install if missing).
+        // Publish dashboard/dist/ via the HTML Publisher plugin.
+        // The entry point is index.html produced by the Vite build.
+        // Requires: HTML Publisher Plugin (Manage Plugins → install if missing).
         // -----------------------------------------------------------------------
         stage('Publish Dashboard') {
             steps {
                 publishHTML(target: [
                     reportName           : 'Dashboard UI',
-                    reportDir            : 'outputs',
-                    reportFiles          : 'dashboard.html',
+                    reportDir            : 'dashboard/dist',
+                    reportFiles          : 'index.html',
                     keepAll              : true,
                     alwaysLinkToLastBuild: true,
                     allowMissing         : false
                 ])
-                echo "[Dashboard] Published — click 'Dashboard UI' in the build sidebar to view."
+                echo "[Dashboard] Published — click 'Dashboard UI' in the build sidebar."
             }
         }
 
         // -----------------------------------------------------------------------
-        // Archive the HTML and all source JSON files for audit trails.
+        // Archive the built dist/ folder and the collected JSON files.
         // -----------------------------------------------------------------------
         stage('Archive Artifacts') {
             steps {
-                archiveArtifacts artifacts: 'outputs/dashboard.html, outputs/**/*.json',
+                archiveArtifacts artifacts: 'dashboard/dist/**,dashboard/public/outputs/*.json',
                                  allowEmptyArchive: true
             }
         }
@@ -127,16 +107,16 @@ pipeline {
 
     post {
         success {
-            echo "Dashboard generated successfully. Open 'Dashboard UI' in the build sidebar."
+            echo "React dashboard built and published. Open 'Dashboard UI' in the build sidebar."
         }
         unstable {
-            echo "Dashboard generated with warnings. Review the stage logs above."
+            echo "Build finished with warnings. Check stage logs above."
         }
         failure {
-            echo "Dashboard generation failed. Verify Python is at %PYTHON_EXE% and scripts/generate_ui.py exists."
+            echo "Build failed. Ensure Node.js is installed and accessible on the PATH."
         }
         always {
-            echo "Artifact: outputs/dashboard.html"
+            echo "Build artifact: dashboard/dist/index.html"
         }
     }
 }
