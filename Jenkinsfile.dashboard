@@ -8,6 +8,11 @@
 pipeline {
     agent any
 
+    environment {
+        NODE_HOME = 'C:\\Program Files\\nodejs'
+        PATH      = "${NODE_HOME};${env.PATH}"
+    }
+
     stages {
 
         // -----------------------------------------------------------------------
@@ -54,13 +59,24 @@ pipeline {
 
         // -----------------------------------------------------------------------
         // Install npm dependencies inside the dashboard folder.
-        // node_modules is not committed, so this must run every build.
+        // Deletes any stale node_modules first to avoid picking up packages
+        // installed at a different path (e.g. a prior json-parser workspace).
+        // Uses npm.cmd so Windows bat resolves it without relying on PATH shims.
         // -----------------------------------------------------------------------
         stage('Install Dependencies') {
             steps {
-                dir('dashboard') {
-                    bat 'npm install'
-                }
+                bat '''
+                @echo off
+                echo [Node] Version check:
+                "%NODE_HOME%\\node.exe" --version
+                "%NODE_HOME%\\npm.cmd"  --version
+
+                echo [NPM] Cleaning stale node_modules...
+                if exist "dashboard\\node_modules" rmdir /s /q "dashboard\\node_modules"
+
+                echo [NPM] Installing dependencies...
+                "%NODE_HOME%\\npm.cmd" install --prefix dashboard
+                '''
             }
         }
 
@@ -69,9 +85,7 @@ pipeline {
         // -----------------------------------------------------------------------
         stage('Build React App') {
             steps {
-                dir('dashboard') {
-                    bat 'npm run build'
-                }
+                bat '"%NODE_HOME%\\npm.cmd" run build --prefix dashboard'
             }
         }
 
