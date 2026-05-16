@@ -35,6 +35,33 @@ pipeline {
         }
 
         // -----------------------------------------------------------------------
+        // Copy JSON artifacts produced by the preventive / remediative pipelines
+        // from their shared Jenkins workspace into this pipeline's outputs/ folder.
+        // xcopy /Y overwrites existing files silently; /D skips files that are
+        // older than the destination so stale copies are never used.
+        // -----------------------------------------------------------------------
+        stage('Collect Outputs') {
+            steps {
+                bat '''
+                @echo off
+                set SRC=C:\\ProgramData\\Jenkins\\.jenkins\\workspace\\Bharath_C1_Pipeline1\\outputs
+                set DST=%CD%\\outputs
+
+                if not exist "%SRC%" (
+                    echo [Collect] Source folder not found: %SRC%
+                    echo [Collect] Skipping copy — dashboard will render placeholders.
+                    goto :done
+                )
+
+                echo [Collect] Copying JSON files from %SRC% to %DST% ...
+                xcopy /Y /D "%SRC%\\*.json" "%DST%\\" 2>nul
+                echo [Collect] Done.
+                :done
+                '''
+            }
+        }
+
+        // -----------------------------------------------------------------------
         // List whatever JSON files are present so the build log is transparent.
         // -----------------------------------------------------------------------
         stage('Inspect Outputs') {
@@ -44,9 +71,7 @@ pipeline {
                 echo ========================================
                 echo  JSON artifacts found in outputs/
                 echo ========================================
-                ls
-                dir /b outputs\\*.json 2>nul || echo (no JSON files found — dashboard will show placeholders)
-                dir /b "C:/ProgramData/Jenkins/.jenkins/workspace/Bharath_C1_Pipeline1/outputs\\*.json 2>nul || echo (no JSON files found — dashboard will show placeholders)
+                dir /b outputs\\*.json 2>nul || echo (no JSON files found)
                 echo ========================================
                 '''
             }
