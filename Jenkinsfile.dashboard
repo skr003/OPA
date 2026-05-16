@@ -35,35 +35,26 @@ pipeline {
 
         // -----------------------------------------------------------------------
         // Copy artifacts from upstream builds if this pipeline is triggered as a
-        // downstream job. The copyArtifacts plugin is used when available; the
-        // step is wrapped in catchError so a missing upstream does not abort the
-        // build (the script will simply render "file not found" placeholders).
-        // Remove or comment this stage when running dashboards from a shared
-        // workspace that already contains the JSON outputs.
+        // downstream job. Both copyArtifacts calls use optional:true so the stage
+        // succeeds even when an upstream job has never run or does not exist.
+        // Remove or comment this stage when running from a shared workspace that
+        // already contains the JSON outputs (e.g. same job as preventive/remediative).
         // -----------------------------------------------------------------------
         stage('Collect Artifacts') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                    script {
-                        // Copy from preventive pipeline if the job exists
-                        if (Jenkins.instance.getItemByFullName('CSPM-Preventive') != null) {
-                            copyArtifacts(
-                                projectName : 'CSPM-Preventive',
-                                filter      : 'outputs/**/*.json',
-                                optional    : true,
-                                flatten     : false
-                            )
-                        }
-                        // Copy from remediative pipeline if the job exists
-                        if (Jenkins.instance.getItemByFullName('CSPM-Remediative') != null) {
-                            copyArtifacts(
-                                projectName : 'CSPM-Remediative',
-                                filter      : 'outputs/**/*.json',
-                                optional    : true,
-                                flatten     : false
-                            )
-                        }
-                    }
+                    copyArtifacts(
+                        projectName : 'CSPM-Preventive',
+                        filter      : 'outputs/**/*.json',
+                        optional    : true,
+                        flatten     : false
+                    )
+                    copyArtifacts(
+                        projectName : 'CSPM-Remediative',
+                        filter      : 'outputs/**/*.json',
+                        optional    : true,
+                        flatten     : false
+                    )
                 }
             }
         }
